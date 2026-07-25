@@ -537,14 +537,15 @@ views.home = async () => {
 /* One quiet line that tells us exactly which world the app is running in —
    screenshot this if Connect ever misbehaves. */
 function deviceDiagnostic() {
-  const C = window.Capacitor;
-  return `device check: platform=${C?.getPlatform?.() || "web"} · bridge=${C ? "yes" : "no"}`
-    + ` · steps-plugin=${window.__hbPlugin && window.__hbPlugin("HBSteps") ? "yes" : "no"}`
-    + ` · usage-plugin=${window.__hbPlugin && window.__hbPlugin("HBUsage") ? "yes" : "no"}`;
+  const s = Providers.status();
+  if (!s.bridge) return "Running as a website — automatic sensors need the installed app.";
+  return `App build: ${s.platform} · step sensor: ${s.steps ? "ready ✓" : "not found"}`
+       + ` · screen time: ${s.screen ? "ready ✓" : "not found"}`;
 }
 
 async function loadPermissionsCenter(gender, cycleEnabled) {
   try {
+    await Providers.detect();          // ask the plugins themselves
     const { integrations } = await api("/permissions");
     const badge = (st) => ({
       connected: `<span class="chip done">Connected</span>`,
@@ -577,8 +578,10 @@ async function loadPermissionsCenter(gender, cycleEnabled) {
     $screen.querySelectorAll("[data-perm]").forEach((b) => b.onclick = async () => {
       const [kind, status] = b.dataset.perm.split(":");
       if (kind === "period_setup") return go("pc_setup");
-      const needsDevice = (kind === "activity" && !Providers.activity.autoAvailable())
-                       || (kind === "screen_time" && !Providers.wellbeing.autoAvailable());
+      await Providers.detect();
+      const prov0 = kind === "activity" ? Providers.activity.auto()
+                  : kind === "screen_time" ? Providers.wellbeing.auto() : null;
+      const needsDevice = !(prov0 && prov0.requestPermission && Providers.platform() !== "web");
       if (status === "connected" && !needsDevice) {
         /* Native app: fire the real OS permission dialog first. */
         const prov = kind === "activity" ? Providers.activity.auto() : Providers.wellbeing.auto();
@@ -593,7 +596,7 @@ async function loadPermissionsCenter(gender, cycleEnabled) {
         } catch (e) { toast(e.message); return; }
         await api("/permissions", { method: "PATCH", body: { integration: kind, status } });
         toast("Connected ✓ Your data will sync automatically now.");
-        Providers.syncDeviceData?.();
+        await Providers.autoSync();
         views.profile();
         return;
       }
