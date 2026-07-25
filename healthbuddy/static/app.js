@@ -275,6 +275,7 @@ views.home = async () => {
   });
   loadDailyPlan();
   loadActivityCard(d);
+  loadScreenTimeCard();
 };
 
 /* --- Today's Plan: ONE task at a time, with a countdown ---------------
@@ -405,6 +406,42 @@ async function loadActivityCard(dash) {
       } catch (e) { toast(e.message); }
     };
   } catch (_) { /* card is optional; home still works */ }
+}
+
+/* --- Screen time card: shown only when real data exists (never fake) --- */
+async function loadScreenTimeCard() {
+  const anchor = $screen.querySelector(".steps-card") || document.getElementById("daily-plan-slot");
+  if (!anchor) return;
+  try {
+    const { wellbeing } = await api("/wellbeing/today");
+    if (!wellbeing) return;   /* not connected → Home stays clean */
+    const m = wellbeing.screen_time_minutes;
+    const h = Math.floor(m / 60), mins = m % 60;
+    const pretty = h ? `${h}h ${mins}m` : `${mins}m`;
+    /* Friendly, never preachy — tone scales with the number, no shaming. */
+    const note = m >= 360 ? "Long day on the glass. Your eyes have earned a break 👀"
+               : m >= 180 ? "Decent chunk of screen today. Blink twice, look far away 🌿"
+               : "Nice and light so far. Your eyes say thanks 💚";
+    const card = document.createElement("div");
+    card.innerHTML = `<div class="card steps-card">
+      <div class="row-between"><strong>📱 Screen time today</strong>
+        <span class="muted small">${wellbeing.source === "manual" ? "entered manually" : "synced"}</span></div>
+      <div class="steps-n">${pretty}</div>
+      <p class="muted small">${note}</p>
+      ${wellbeing.source === "manual" ? `<button class="btn btn-ghost btn-sm" id="screen-update">Update</button>` : ""}
+    </div>`;
+    anchor.insertAdjacentElement("afterend", card.firstElementChild);
+    const upd = document.getElementById("screen-update");
+    if (upd) upd.onclick = async () => {
+      const v = prompt("Roughly how many minutes on screens today?", m);
+      if (v === null) return;
+      try {
+        await Providers.wellbeing.manual.submit(parseInt(v, 10));
+        toast("Saved 📱");
+        views.home();
+      } catch (e) { toast(e.message); }
+    };
+  } catch (_) { /* optional card */ }
 }
 
 async function loadInlineNudge() {
