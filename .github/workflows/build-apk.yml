@@ -78,6 +78,36 @@ jobs:
           print("manifest patched")
           EOF
 
+      - name: Install the HealthBuddy app icon
+        working-directory: native
+        run: |
+          # Replace Capacitor's placeholder icon with the brand heart+sprout.
+          rm -rf android/app/src/main/res/mipmap-anydpi-v26
+          cp -r appicon/mipmap-* android/app/src/main/res/
+
+      - name: Verify the app is assembled correctly (fail loudly, not silently)
+        working-directory: native
+        run: |
+          set -e
+          grep -q "HB_API_BASE" www/index.html || { echo "::error::Bundled screens missing API base — native/bundle_www.py did not run properly"; exit 1; }
+          grep -q "registerPlugin(StepsPlugin.class)" android/app/src/main/java/app/healthbuddy/MainActivity.java || { echo "::error::MainActivity was not replaced — sensor plugins will be missing"; exit 1; }
+          test -f android/app/src/main/java/app/healthbuddy/StepsPlugin.java || { echo "::error::StepsPlugin.java missing from the Android project"; exit 1; }
+          grep -q "ACTIVITY_RECOGNITION" android/app/src/main/AndroidManifest.xml || { echo "::error::Manifest permissions were not added"; exit 1; }
+          echo "assembly verified: screens bundled, plugins present, permissions set"
+
+      - name: Apply the HealthBuddy app icon
+        run: python3 native/apply_icons.py
+
+      - name: Sanity-check the native plugins are in place
+        working-directory: native
+        run: |
+          test -f android/app/src/main/java/app/healthbuddy/StepsPlugin.java
+          test -f android/app/src/main/java/app/healthbuddy/UsagePlugin.java
+          grep -q "registerPlugin(StepsPlugin.class)" android/app/src/main/java/app/healthbuddy/MainActivity.java
+          grep -q "HBSteps" ../healthbuddy/static/providers.js
+          grep -q "ACTIVITY_RECOGNITION" android/app/src/main/AndroidManifest.xml
+          echo "plugins, registration, JS names and permissions all verified"
+
       - name: Sync Capacitor
         working-directory: native
         run: npx cap sync android
@@ -87,6 +117,13 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug
+
+      - name: Verify the finished APK contains the bundled screens
+        working-directory: native/android
+        run: |
+          unzip -p app/build/outputs/apk/debug/app-debug.apk assets/public/index.html | grep -q "HB_API_BASE" \
+            || { echo "::error::APK does not contain the bundled screens — it would load like a browser and sensors would fail"; exit 1; }
+          echo "APK verified: screens are inside, sensor bridge guaranteed"
 
       - name: Hand over the APK
         uses: actions/upload-artifact@v4
