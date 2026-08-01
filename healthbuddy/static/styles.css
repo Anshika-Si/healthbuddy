@@ -60,6 +60,7 @@ h1 { font-size: 30px; } h2 { font-size: 22px; } h3 { font-size: 18px; }
 .btn:active { transform: scale(.97); }
 .btn-primary { background: var(--brand-grad); color: #241028; }
 .btn-ghost { background: var(--surface); color: var(--text); border: 1.5px solid var(--line); }
+.btn-link { background: none; border: none; color: var(--accent, #7c5cff); text-decoration: underline; padding: 4px 0; align-self: flex-start; font-size: 14px; }
 .btn-block { width: 100%; }
 .btn-sm { min-height: 44px; padding: 0 16px; font-size: 15px; border-radius: var(--r-sm); }
 .btn[disabled] { opacity: .5; cursor: not-allowed; }
@@ -308,3 +309,69 @@ details.fold > .card { margin-top: 0; border-top-left-radius: 0; border-top-righ
 
 /* ---------- checklist − undo ---------- */
 .check-row .btn-minus { min-width: 42px; padding: 8px 10px; margin-right: 6px; }
+
+/* ---------- OTP input ---------- */
+.otp-input { text-align: center; letter-spacing: 10px; font-size: 26px; font-weight: 800;
+  font-family: var(--font-display); }
+
+/* ================= BUDDY AVATAR ================= */
+.buddy-stage { position: relative; display: grid; place-items: center; margin: var(--sp-3) auto var(--sp-2);
+  width: 260px; max-width: 84vw; }
+.buddy-ring { position: absolute; inset: 0; width: 100%; height: auto; transform: rotate(-90deg); }
+.buddy-ring .track { stroke: var(--surface-2); }
+.buddy-ring .arc { stroke: url(#bRing); stroke-linecap: round;
+  transition: stroke-dashoffset .9s cubic-bezier(.3,1.2,.4,1); }
+.buddy-tap { background: none; border: none; padding: 0; width: 72%; cursor: pointer; }
+.buddy-svg { width: 100%; height: auto; overflow: visible; }
+.buddy-body { animation: buddyFloat 3.6s ease-in-out infinite; transform-origin: 50% 80%; }
+@keyframes buddyFloat { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-7px) } }
+.buddy-leaf { transform-origin: 4px -70px; animation: leafSway 3s ease-in-out infinite; }
+@keyframes leafSway { 0%,100% { transform: rotate(-6deg) } 50% { transform: rotate(8deg) } }
+.buddy-tap.is-waving .buddy-arm-r { animation: wave .5s ease-in-out 3; transform-origin: 58px 14px; }
+@keyframes wave { 0%,100% { transform: rotate(0) } 50% { transform: rotate(-34deg) } }
+.buddy-tap:active .buddy-body { transform: scale(.96); }
+.buddy-cape { animation: capeFlap 2.4s ease-in-out infinite; transform-origin: 50% 0; }
+@keyframes capeFlap { 0%,100% { transform: skewX(0deg) } 50% { transform: skewX(7deg) } }
+.buddy-flames .flame { animation: flicker 1s ease-in-out infinite; transform-origin: 50% 100%; }
+.buddy-flames .f1 { animation-delay: .18s } .buddy-flames .f2 { animation-delay: .36s }
+.buddy-flames .f3 { animation-delay: .54s }
+@keyframes flicker { 0%,100% { transform: scaleY(1) scaleX(1); opacity: .8 }
+  50% { transform: scaleY(1.28) scaleX(.9); opacity: 1 } }
+.buddy-tap.is-fired { filter: drop-shadow(0 0 18px rgba(255,138,92,.5)); }
+.buddy-caption { text-align: center; display: grid; gap: 2px; justify-items: center; margin-top: -6px; }
+.buddy-score { font: 700 34px var(--font-display); line-height: 1; }
+
+/* particles used by taps and habit logs */
+.hb-particle { position: absolute; bottom: 18%; font-size: 20px; pointer-events: none;
+  animation: floatUp 1.2s ease-out forwards; }
+@keyframes floatUp { 0% { opacity: 0; transform: translate(0,0) scale(.6) }
+  25% { opacity: 1 } 100% { opacity: 0; transform: translate(var(--dx,0), -90px) scale(1.25) } }
+
+/* per-habit celebrations */
+.fx-pop { animation: fxPop .5s cubic-bezier(.3,1.6,.5,1); }
+@keyframes fxPop { 0% { transform: scale(1) } 45% { transform: scale(1.045) } 100% { transform: scale(1) } }
+.fx-splash { animation: fxSplash .7s ease; box-shadow: 0 0 0 2px rgba(79,195,247,.5) inset; }
+@keyframes fxSplash { 0% { background: var(--surface) } 40% { background: rgba(79,195,247,.18) }
+  100% { background: var(--surface) } }
+.fx-night { animation: fxNight 2.4s ease; }
+@keyframes fxNight { 0% { background: var(--surface) }
+  30% { background: linear-gradient(160deg,#2b2350,#141031) }
+  75% { background: linear-gradient(160deg,#221c44,#0e0b24) }
+  100% { background: var(--surface) } }
+
+/* steps track with jogging buddy */
+.steps-track { position: relative; height: 26px; border-radius: 99px; background: var(--surface-2);
+  overflow: visible; margin: 6px 0 2px; }
+.steps-fill { height: 100%; border-radius: 99px; background: var(--brand-grad);
+  transition: width .8s cubic-bezier(.3,1.2,.4,1); }
+.steps-runner { position: absolute; top: -6px; font-size: 20px; transition: left .8s cubic-bezier(.3,1.2,.4,1); }
+.steps-track.is-done .steps-runner { animation: sprint .6s ease-in-out 2; }
+@keyframes sprint { 0%,100% { transform: translateX(0) } 50% { transform: translateX(6px) } }
+.steps-flag { position: absolute; right: -4px; top: -4px; font-size: 18px; }
+
+/* level-up moment */
+.levelup-burst { font-size: 54px; animation: fxPop .6s ease 2; }
+.levelup-buddy { width: 150px; margin: 6px auto 0; }
+@media (prefers-reduced-motion: reduce) {
+  .buddy-body, .buddy-leaf, .buddy-cape, .buddy-flames .flame, .hb-particle { animation: none !important; }
+}

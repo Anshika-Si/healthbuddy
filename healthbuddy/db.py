@@ -133,6 +133,69 @@ CREATE TABLE IF NOT EXISTS integrations (
     revoked_at TEXT,
     PRIMARY KEY (user_id, integration_type)
 );
+CREATE TABLE IF NOT EXISTS sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    token_hash TEXT UNIQUE NOT NULL,   -- sha256 of the refresh token; raw token never stored
+    device_label TEXT,                 -- best-effort User-Agent snippet, for a future "manage devices" screen
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    endpoint TEXT UNIQUE NOT NULL,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    user_agent TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_sent_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_push_subs_user ON push_subscriptions(user_id);
+CREATE TABLE IF NOT EXISTS push_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    template_id TEXT NOT NULL,
+    slot TEXT,
+    sent_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_push_history_user ON push_history(user_id, sent_at);
+CREATE TABLE IF NOT EXISTS push_snoozes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    template_id TEXT NOT NULL,
+    remind_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_push_snoozes_user ON push_snoozes(user_id, remind_at);
+CREATE TABLE IF NOT EXISTS pending_signups (
+    email TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS email_otps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    code_hash TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    used_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_email_otps_lookup ON email_otps(email, purpose, used_at);
+CREATE TABLE IF NOT EXISTS password_resets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    token_hash TEXT UNIQUE NOT NULL,   -- sha256 of the raw token; raw token never stored
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL,
+    used_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets(user_id);
 CREATE TABLE IF NOT EXISTS game_scores (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL REFERENCES users(id),
@@ -168,6 +231,9 @@ MIGRATIONS = [
     ("users", "step_goal",     "ALTER TABLE users ADD COLUMN step_goal INTEGER NOT NULL DEFAULT 8000"),
     ("users", "health_goals",  "ALTER TABLE users ADD COLUMN health_goals TEXT"),
     ("users", "notif_enabled", "ALTER TABLE users ADD COLUMN notif_enabled INTEGER NOT NULL DEFAULT 1"),
+    # Existing accounts default to verified so nobody already using the app
+    # gets locked out; only NEW signups go through the OTP gate.
+    ("users", "email_verified", "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 1"),
 ]
 
 

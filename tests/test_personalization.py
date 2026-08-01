@@ -37,7 +37,9 @@ class PersonalizationTestCase(unittest.TestCase):
     def auth(self, email="p@example.com", gender="female", goals=None):
         res = self.client.post("/api/auth/register",
                                json={"email": email, "name": "Pri", "password": "password123"})
-        tok = res.get_json()["token"]
+        tok = self.client.post("/api/auth/register/verify", json={
+            "email": res.get_json()["email"],
+            "code": res.get_json()["dev_code"]}).get_json()["token"]
         h = {"Authorization": "Bearer " + tok}
         self.client.post("/api/onboarding", headers=h,
                          json={"occupation": "student", "gender": gender,

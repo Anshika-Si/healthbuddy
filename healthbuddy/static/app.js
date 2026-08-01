@@ -4,7 +4,11 @@
 
 const $screen = document.getElementById("screen");
 const $tabbar = document.getElementById("tabbar");
-const state = { token: localStorage.getItem("hb_token"), user: null };
+const state = {
+  token: localStorage.getItem("hb_token"),
+  refreshToken: localStorage.getItem("hb_refresh"),
+  user: null,
+};
 
 /* ---------------- API client ---------------- */
 /* In the native phone app, the screens are bundled locally and talk to the
@@ -12,7 +16,17 @@ const state = { token: localStorage.getItem("hb_token"), user: null };
    On the website it's empty and everything works same-origin as before. */
 const API_BASE = window.HB_API_BASE || "";
 
-async function api(path, { method = "GET", body } = {}) {
+function saveSession(data) {
+  state.token = data.token;
+  localStorage.setItem("hb_token", data.token);
+  if (data.refresh_token) {
+    state.refreshToken = data.refresh_token;
+    localStorage.setItem("hb_refresh", data.refresh_token);
+  }
+  if (data.user) state.user = data.user;
+}
+
+async function rawApi(path, { method = "GET", body } = {}) {
   const res = await fetch(API_BASE + "/api" + path, {
     method,
     headers: {
@@ -22,6 +36,34 @@ async function api(path, { method = "GET", body } = {}) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
+  return { res, data };
+}
+
+/* Swaps the (possibly expired) access token for a fresh one using the
+   long-lived refresh token, without bothering the user. Returns true on
+   success so the caller can retry the original request. */
+let _refreshing = null;
+async function silentRefresh() {
+  if (!state.refreshToken) return false;
+  if (!_refreshing) {
+    _refreshing = rawApi("/auth/refresh", { method: "POST", body: { refresh_token: state.refreshToken } })
+      .then(({ res, data }) => {
+        if (!res.ok) throw new Error(data.error || "refresh failed");
+        saveSession(data);
+        return true;
+      })
+      .catch(() => { clearSession(); return false; })
+      .finally(() => { _refreshing = null; });
+  }
+  return _refreshing;
+}
+
+async function api(path, opts = {}) {
+  let { res, data } = await rawApi(path, opts);
+  if (res.status === 401 && path !== "/auth/refresh") {
+    const recovered = await silentRefresh();
+    if (recovered) ({ res, data } = await rawApi(path, opts));
+  }
   if (!res.ok) {
     if (res.status === 401 && state.user) return logout();
     throw new Error(data.error || "Something went wrong. Try again.");
@@ -67,11 +109,221 @@ function render(html) {
   window.scrollTo(0, 0);
 }
 
-function logout() {
+function clearSession() {
   localStorage.removeItem("hb_token");
-  state.token = null; state.user = null;
-  go("welcome");
+  localStorage.removeItem("hb_refresh");
+  state.token = null; state.refreshToken = null; state.user = null;
 }
+
+function logout() {
+  const refreshToken = state.refreshToken;
+  clearSession();
+  go("welcome");
+  // Best-effort revoke so this device can't silently refresh again; the user
+  // is already signed out locally regardless of whether this call succeeds.
+  if (refreshToken) {
+    rawApi("/auth/logout", { method: "POST", body: { refresh_token: refreshToken } }).catch(() => {});
+  }
+}
+
+/* ---------------- notifications (native local + web push) ----------------
+   Android's Capacitor WebView does NOT implement the Web Push API
+   (window.PushManager is simply absent there), so the browser-style push
+   flow below only ever works on the website / installed PWA. Inside the
+   actual APK we use @capacitor/local-notifications instead: notifications
+   scheduled on-device at fixed daily times, no server round-trip, no VAPID,
+   no cron needed. Every call site below (login, onboarding, Profile card)
+   goes through pushStatus()/enablePush()/disablePush() and doesn't need to
+   know which mechanism is actually running underneath. */
+
+/* Fixed daily nudge times for the native build - one per SLOTS window in
+   services/notify.py. Local notifications can't fetch personalized content
+   at fire-time (the device may be offline), so each carries a small rotating
+   line in the same voice as the server-composed ones, picked once when
+   notifications are enabled. IDs are fixed so they can be found & cancelled. */
+const LOCAL_SLOTS = [
+  { id: 101, hour: 8, minute: 30, title: "☀️ Rise and shine",
+    body: "Before the chai, before the scroll — one glass of water first." },
+  { id: 102, hour: 13, minute: 30, title: "🪑 Chair check",
+    body: "You've been one with your chair since morning. Time to remind your legs they still work." },
+  { id: 103, hour: 18, minute: 30, title: "🧘 Stretch o'clock",
+    body: "Pause for 60 seconds and stretch. Your spine has been quietly judging you all day." },
+  { id: 104, hour: 21, minute: 30, title: "🌙 Wind-down nudge",
+    body: "Screens off in 20 minutes? Just as an experiment — see how you feel tomorrow." },
+];
+
+function nativeLocalNotifAvailable() {
+  return !!window.Capacitor?.isNativePlatform?.() && !!window.__hbPlugin?.("LocalNotifications");
+}
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+}
+
+function webPushSupported() {
+  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+}
+
+function pushSupported() {
+  return nativeLocalNotifAvailable() || webPushSupported();
+}
+
+async function localNotifStatus() {
+  try {
+    const LN = window.__hbPlugin("LocalNotifications");
+    const perm = await LN.checkPermissions();
+    if (perm.display === "denied") return "denied";
+    if (perm.display !== "granted") return "undecided";
+    const pending = await LN.getPending();
+    const ids = new Set(LOCAL_SLOTS.map((s) => s.id));
+    const scheduled = pending.notifications.some((n) => ids.has(n.id));
+    return scheduled ? "on" : "off";
+  } catch (e) {
+    console.error("[push] localNotifStatus() failed:", e);
+    return "error";
+  }
+}
+
+async function webPushStatus() {
+  if (!webPushSupported()) return "unsupported";
+  if (Notification.permission === "denied") return "denied";
+  if (Notification.permission === "default") return "undecided";
+
+  // navigator.serviceWorker.ready can hang indefinitely in an SPA that
+  // navigates via hash changes rather than full reloads, if this exact
+  // page instance loaded before the SW finished activating. Never let
+  // the UI hang forever waiting on it - race it against a timeout.
+  const timeout = new Promise((resolve) => setTimeout(() => resolve("timeout"), 4000));
+  try {
+    const result = await Promise.race([
+      navigator.serviceWorker.ready.then(async (reg) => {
+        const sub = await reg.pushManager.getSubscription();
+        return sub ? "on" : "off";
+      }),
+      timeout,
+    ]);
+    if (result === "timeout") {
+      console.error("[push] navigator.serviceWorker.ready did not resolve within 4s - " +
+        "try a full page reload (not just an in-app navigation).");
+      return "sw-timeout";
+    }
+    return result;
+  } catch (e) {
+    console.error("[push] webPushStatus() failed:", e);
+    return "error";
+  }
+}
+
+async function pushStatus() {
+  return nativeLocalNotifAvailable() ? localNotifStatus() : webPushStatus();
+}
+
+async function enableLocalNotifs() {
+  const LN = window.__hbPlugin("LocalNotifications");
+  if (!LN) { toast("Notifications plugin not available on this build."); return false; }
+  try {
+    const perm = await LN.requestPermissions();
+    if (perm.display !== "granted") {
+      toast(perm.display === "denied"
+        ? "Notifications are blocked. Enable them in your phone's Settings → Apps → HealthBuddy → Notifications."
+        : "No worries — you can turn this on later in Profile.");
+      return false;
+    }
+    await LN.schedule({
+      notifications: LOCAL_SLOTS.map((s) => ({
+        id: s.id, title: s.title, body: s.body,
+        schedule: { on: { hour: s.hour, minute: s.minute }, allowWhileIdle: true },
+      })),
+    });
+    toast("Notifications on 🔔 — daily nudges at set times, even with the app closed.");
+    return true;
+  } catch (e) {
+    toast("Couldn't turn on notifications: " + e.message);
+    return false;
+  }
+}
+
+/* Must be called from a direct user click - browsers silently ignore
+   permission requests that aren't tied to a user gesture. */
+async function enableWebPush() {
+  if (!webPushSupported()) { toast("Push notifications aren't supported on this browser."); return false; }
+
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") {
+    toast(permission === "denied"
+      ? "Notifications are blocked. Enable them in your browser/app settings to get nudges."
+      : "No worries — you can turn this on later in Profile.");
+    return false;
+  }
+
+  try {
+    const { public_key } = await api("/push/public-key");
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(public_key),
+      });
+    }
+    await api("/push/subscribe", { method: "POST", body: { subscription: sub.toJSON() } });
+    toast("Notifications on 🔔 — you'll get nudges even when the app's closed.");
+    return true;
+  } catch (e) {
+    toast("Couldn't turn on notifications: " + e.message);
+    return false;
+  }
+}
+
+async function enablePush() {
+  return nativeLocalNotifAvailable() ? enableLocalNotifs() : enableWebPush();
+}
+
+async function disableLocalNotifs() {
+  try {
+    const LN = window.__hbPlugin("LocalNotifications");
+    await LN.cancel({ notifications: LOCAL_SLOTS.map((s) => ({ id: s.id })) });
+    toast("Notifications turned off.");
+  } catch (e) { toast(e.message); }
+}
+
+async function disableWebPush() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      await api("/push/unsubscribe", { method: "POST", body: { endpoint: sub.endpoint } });
+      await sub.unsubscribe();
+    }
+    toast("Notifications turned off.");
+  } catch (e) { toast(e.message); }
+}
+
+async function disablePush() {
+  return nativeLocalNotifAvailable() ? disableLocalNotifs() : disableWebPush();
+}
+
+/* Shown after onboarding AND after every login, on any device, until the
+   person has actually decided (not just dismissed once elsewhere) - so a
+   new device/browser always gets a real chance to ask, not just day one. */
+async function maybePromptForPush() {
+  const status = await pushStatus();
+  if (status !== "undecided") return;
+  modal(`<span class="big-em">🔔</span>
+    <h2>Want nudges to actually reach you?</h2>
+    <p class="muted">Turn on notifications and HealthBuddy can nudge you even when the
+    app's closed — like a text from a friend, not a boring alarm.</p>
+    <button class="btn btn-primary btn-block section-gap" id="push-yes">Enable notifications</button>
+    <button class="btn btn-ghost btn-block" data-close>Maybe later</button>`);
+  document.getElementById("push-yes").onclick = async (e) => {
+    await enablePush();
+    e.target.closest(".modal-backdrop")?.remove();
+  };
+}
+
 
 /* ---------------- views ---------------- */
 const views = {};
@@ -99,8 +351,9 @@ function authForm(mode) {
       ${isReg ? `<div class="field"><label for="f-name">Name</label><input id="f-name" autocomplete="name"></div>` : ""}
       <div class="field"><label for="f-email">Email</label><input id="f-email" type="email" autocomplete="email"></div>
       <div class="field"><label for="f-pass">Password</label><input id="f-pass" type="password" autocomplete="${isReg ? "new-password" : "current-password"}"></div>
+      ${!isReg ? `<button class="btn btn-link" id="f-forgot" type="button" style="margin:-8px 0 0">Forgot password?</button>` : ""}
       <p class="form-error" id="f-err" role="alert"></p>
-      <button class="btn btn-primary btn-block" id="f-submit">${isReg ? "Create account" : "Sign in"}</button>
+      <button class="btn btn-primary btn-block section-gap" id="f-submit">${isReg ? "Create account" : "Sign in"}</button>
       <button class="btn btn-ghost btn-block section-gap" data-go="${isReg ? "login" : "register"}">
         ${isReg ? "I already have an account" : "I'm new here"}</button>
     </div>`);
@@ -114,36 +367,125 @@ function authForm(mode) {
       };
       if (isReg) body.name = document.getElementById("f-name").value;
       const data = await api("/auth/" + mode, { method: "POST", body });
-      state.token = data.token; state.user = data.user;
-      localStorage.setItem("hb_token", data.token);
+      if (data.verification_required) {          // signup: email must be proven first
+        toast(data.message);
+        return verifyEmailFlow(data.email, data.dev_code || "");
+      }
+      saveSession(data);
       go(data.user.onboarded ? "home" : "onboarding");
+      if (data.user.onboarded) await maybePromptForPush();
     } catch (e) { err.textContent = e.message; }
   };
+  document.getElementById("f-forgot")?.addEventListener("click", () => forgotPasswordFlow());
 }
 views.register = () => authForm("register");
 views.login = () => authForm("login");
 
-/* --- brand logo (reusable; swap logo.svg to rebrand everywhere at once) --- */
-const logoImg = (size) =>
-  `<img src="/static/logo.svg" width="${size}" height="${size}" alt="" class="brand-logo" aria-hidden="true">`;
+/* --- email verification (signup step 2) ---------------------------------
+   The account isn't created until the emailed 6-digit code checks out. A
+   60-second cooldown gates "resend", matching the server's rule so the two
+   never disagree. `devCode` is only ever populated on a server with no mail
+   provider configured — it keeps the flow testable, never used in prod. */
+function otpBoxHTML(idPrefix, label) {
+  return `<div class="field"><label for="${idPrefix}-code">${label}</label>
+    <input id="${idPrefix}-code" class="otp-input" inputmode="numeric" maxlength="6"
+           autocomplete="one-time-code" placeholder="• • • • • •"></div>`;
+}
 
-/* --- onboarding (4-step stepper) --- */
-const OB_STEPS = [
-  { key: "health_goals", multi: true, q: "What are your goals right now?",
-    hint: "Pick as many as you like.", opts: [
-    ["fitness", "💪", "Get fitter"], ["stress", "🧘", "Manage stress"],
-    ["sleep", "😴", "Sleep better"], ["eat_better", "🥗", "Eat better"],
-    ["general", "✨", "General wellness"]] },
-  { key: "occupation", q: "What describes you best?", opts: [
-    ["student", "🎓", "Student"], ["professional", "💼", "Working professional"],
-    ["other", "🤝", "Other / prefer not to say"]] },
-  { key: "activity_level", q: "How active are you these days?", opts: [
-    ["active", "🏃", "Pretty active"], ["moderate", "🚶", "Somewhat active"],
-    ["inactive", "🛋️", "Not really active"]] },
-  { key: "gender", q: "How do you identify? (only used to pick better card content)", opts: [
-    ["female", "🙋‍♀️", "Female"], ["male", "🙋‍♂️", "Male"],
-    ["nonbinary", "🧑", "Non-binary"], ["prefer_not", "🤐", "Prefer not to say"]] },
-];
+function verifyEmailFlow(email, devCode) {
+  $tabbar.classList.add("hidden");
+  render(`
+    <div style="max-width:400px;margin:40px auto 0;text-align:center">
+      <div style="font-size:48px" aria-hidden="true">📬</div>
+      <h1>Check your inbox</h1>
+      <p class="muted">We sent a 6-digit code to <strong>${esc(email)}</strong>.
+      Enter it below to finish creating your account.</p>
+      ${devCode ? `<p class="muted small">Dev mode (no mail provider configured): your code is <strong>${esc(devCode)}</strong>.</p>` : ""}
+      <div style="text-align:left">${otpBoxHTML("ve", "Verification code")}</div>
+      <p class="form-error" id="ve-err" role="alert"></p>
+      <button class="btn btn-primary btn-block" id="ve-submit">Verify & continue</button>
+      <button class="btn btn-ghost btn-block section-gap" id="ve-resend">Resend code</button>
+      <button class="btn btn-link" id="ve-back">Use a different email</button>
+    </div>`);
+  const codeInput = document.getElementById("ve-code");
+  codeInput.focus();
+  if (devCode) codeInput.value = devCode;
+
+  document.getElementById("ve-submit").onclick = async () => {
+    const err = document.getElementById("ve-err");
+    err.textContent = "";
+    try {
+      const data = await api("/auth/register/verify", {
+        method: "POST", body: { email, code: codeInput.value } });
+      saveSession(data);
+      toast("Email verified 🎉");
+      go("onboarding");
+    } catch (e) { err.textContent = e.message; }
+  };
+
+  const resend = document.getElementById("ve-resend");
+  let cooldown = 60;
+  const tick = setInterval(() => {
+    cooldown -= 1;
+    if (cooldown <= 0) { clearInterval(tick); resend.disabled = false; resend.textContent = "Resend code"; }
+    else resend.textContent = `Resend code in ${cooldown}s`;
+  }, 1000);
+  resend.disabled = true;
+  resend.onclick = async () => {
+    try {
+      const data = await api("/auth/register/resend", { method: "POST", body: { email } });
+      toast(data.message);
+      if (data.dev_code) codeInput.value = data.dev_code;
+      resend.disabled = true; cooldown = 60;
+    } catch (e) { toast(e.message); }
+  };
+  document.getElementById("ve-back").onclick = () => go("register");
+}
+
+/* --- forgot password: email → emailed code + new password ---------------- */
+function forgotPasswordFlow() {
+  modal(`<h2>Reset your password 🔑</h2>
+    <p class="muted small">Enter your account email and we'll send you a 6-digit reset code.</p>
+    <div class="field"><label for="fp-email">Email</label><input id="fp-email" type="email" autocomplete="email"></div>
+    <p class="form-error" id="fp-err" role="alert"></p>
+    <button class="btn btn-primary btn-block section-gap" id="fp-submit">Send reset code</button>
+    <button class="btn btn-ghost btn-block" data-close>Cancel</button>`);
+  document.getElementById("fp-submit").onclick = async () => {
+    const err = document.getElementById("fp-err");
+    err.textContent = "";
+    const email = document.getElementById("fp-email").value.trim();
+    try {
+      const data = await api("/auth/forgot-password", { method: "POST", body: { email } });
+      document.querySelector(".modal-backdrop")?.remove();
+      toast(data.message);
+      resetPasswordFlow(email, data.dev_code || "");
+    } catch (e) { err.textContent = e.message; }
+  };
+}
+
+function resetPasswordFlow(email, devCode) {
+  modal(`<h2>Set a new password</h2>
+    <p class="muted small">Enter the code we emailed to <strong>${esc(email)}</strong>, then pick a new password.</p>
+    ${devCode ? `<p class="muted small">Dev mode: your code is <strong>${esc(devCode)}</strong>.</p>` : ""}
+    ${otpBoxHTML("rp", "Reset code")}
+    <div class="field"><label for="rp-pass">New password</label><input id="rp-pass" type="password" autocomplete="new-password"></div>
+    <p class="form-error" id="rp-err" role="alert"></p>
+    <button class="btn btn-primary btn-block section-gap" id="rp-submit">Update password</button>
+    <button class="btn btn-ghost btn-block" data-close>Cancel</button>`);
+  if (devCode) document.getElementById("rp-code").value = devCode;
+  document.getElementById("rp-submit").onclick = async () => {
+    const err = document.getElementById("rp-err");
+    err.textContent = "";
+    try {
+      const data = await api("/auth/reset-password", { method: "POST", body: {
+        email, code: document.getElementById("rp-code").value,
+        password: document.getElementById("rp-pass").value } });
+      document.querySelector(".modal-backdrop")?.remove();
+      toast(data.message || "Password updated ✨");
+      go("login");
+    } catch (e) { err.textContent = e.message; }
+  };
+}
 
 views.onboarding = () => {
   $tabbar.classList.add("hidden");
@@ -156,6 +498,7 @@ views.onboarding = () => {
       rewardFeedback({ xp_earned: data.xp_earned, new_badges: [] });
       toast("You're all set! 🌱");
       go("home");
+      await maybePromptForPush();
     } catch (e) { toast(e.message); }
   };
   const advance = () => {
@@ -224,16 +567,7 @@ views.home = async () => {
       <p class="muted">Level ${d.level} · ${d.xp} XP</p></div>
       ${logoImg(40)}
     </div>
-    <div class="ring-wrap"><div class="ring">
-      <svg width="190" height="190" viewBox="0 0 190 190" role="img" aria-label="Today's health score: ${pct} out of 100">
-        <defs><linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#FF8A5C"/><stop offset="1" stop-color="#FF5C8A"/></linearGradient></defs>
-        <circle class="track" cx="95" cy="95" r="80" fill="none" stroke-width="16"/>
-        <circle class="arc" cx="95" cy="95" r="80" fill="none" stroke-width="16"
-          stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - pct / 100)}"/>
-      </svg>
-      <div class="ring-center"><span class="score">${pct}</span><span class="muted small">today's score</span></div>
-    </div></div>
+    ${buddyHeroHTML(d)}
 
     <div id="daily-plan-slot"><div class="card"><p class="muted">Loading today's plan…</p></div></div>
 
@@ -273,6 +607,8 @@ views.home = async () => {
       views.home();
     } catch (e) { toast(e.message); }
   });
+  wireBuddyTap();
+  noticeLevelUp(d.level);
   loadDailyPlan();
   loadActivityCard(d);
   loadScreenTimeCard();
@@ -386,7 +722,7 @@ async function loadActivityCard(dash) {
         <div class="row-between"><strong>🚶 Today's steps</strong>
           <span class="muted small">${activity.source === "manual" ? "entered manually" : "synced"}</span></div>
         <div class="steps-n">${activity.steps.toLocaleString()} <span class="muted small">/ ${step_goal.toLocaleString()}</span></div>
-        <div class="bar"><div style="width:${pct}%"></div></div>
+        ${stepsTrackHTML(activity.steps, step_goal)}
         <p class="muted small">${left > 0 ? `Keep going! Just ${left.toLocaleString()} steps to your goal 🌱`
           : "Goal reached — your legs definitely showed up today 🔥"}</p>
         ${activity.source === "manual" ? `<button class="btn btn-ghost btn-sm" id="steps-update">Update</button>` : ""}
@@ -462,10 +798,14 @@ async function quickLog(h) {
     if (Number.isNaN(value)) return toast("That needs to be a number.");
   }
   try {
+    const row = $screen.querySelector(`[data-log="${h.type}"]`)?.closest(".check-row");
     const data = await api("/logs", { method: "POST", body: { type: h.type, value } });
+    habitAnimation(h.type, row);
+    if (h.type === "mood") moodBurst(row, value);
     rewardFeedback(data);
     if (data.streak >= 2) toast(`${h.emoji} ${data.streak}-day ${h.label.toLowerCase()} streak!`);
-    views.home();
+    /* let the little celebration finish before the screen repaints */
+    setTimeout(() => views.home(), h.type === "sleep" ? 1500 : 900);
   } catch (e) { toast(e.message); }
 }
 
@@ -635,6 +975,9 @@ views.profile = async () => {
     </div>
 
     </details>
+    <details class="fold"><summary>🔔 Notifications</summary>
+    <div class="card" id="push-card"><p class="muted small">Checking status…</p></div>
+    </details>
     <details class="fold"><summary>🧠 Why am I seeing this?</summary>
     <div class="card">
       <p class="muted small">${esc(t.explanation)}</p>
@@ -669,7 +1012,59 @@ views.profile = async () => {
     views.profile();
   });
   document.getElementById("signout").onclick = logout;
+  renderPushCard();
 };
+
+async function renderPushCard() {
+  const card = document.getElementById("push-card");
+  if (!card) return;
+  let status;
+  try {
+    status = await pushStatus();
+  } catch (e) {
+    console.error("[push] renderPushCard failed:", e);
+    status = "error";
+  }
+  const copy = {
+    unsupported: ["😕", "Not supported on this browser.", null],
+    denied: ["🔕", "Blocked — enable notifications for HealthBuddy in your device/browser settings.", null],
+    undecided: ["🔔", "Off — turn these on so nudges reach you even when the app's closed.", "on"],
+    off: ["🔔", "Permission granted, but not active on this device yet.", "on"],
+    on: ["✅", "On — you'll get nudges even when the app's closed.", "off"],
+    "sw-timeout": ["⚠️", "Taking too long to check — do a full page reload (Cmd/Ctrl+Shift+R), not just switching tabs.", "retry"],
+    error: ["⚠️", "Couldn't check notification status. Open the browser console for details.", "retry"],
+  }[status] || ["⚠️", "Unknown status.", "retry"];
+  const [emoji, text, action] = copy;
+  card.innerHTML = `
+    <div class="check-row">
+      <span class="em" aria-hidden="true">${emoji}</span>
+      <div class="grow"><span class="small">${text}</span></div>
+      ${action === "on" ? `<button class="btn btn-primary btn-sm" id="push-toggle">Enable</button>` : ""}
+      ${action === "off" ? `<button class="btn btn-ghost btn-sm" id="push-toggle">Turn off</button>` : ""}
+      ${action === "retry" ? `<button class="btn btn-ghost btn-sm" id="push-retry">Retry</button>` : ""}
+    </div>
+    ${status === "on" ? `<button class="btn btn-ghost btn-sm btn-block section-gap" id="push-test-btn">Send me a test notification</button>` : ""}`;
+  document.getElementById("push-toggle")?.addEventListener("click", async () => {
+    if (action === "on") await enablePush(); else await disablePush();
+    renderPushCard();
+  });
+  document.getElementById("push-retry")?.addEventListener("click", () => renderPushCard());
+  document.getElementById("push-test-btn")?.addEventListener("click", async () => {
+    try {
+      if (nativeLocalNotifAvailable()) {
+        const LN = window.__hbPlugin("LocalNotifications");
+        await LN.schedule({ notifications: [{
+          id: 199, title: "✅ HealthBuddy", body: "Test notification — if you can see this, it's working!",
+          schedule: { at: new Date(Date.now() + 5000) },
+        }] });
+        toast("Test scheduled — check your notification tray in ~5 seconds!");
+      } else {
+        await api("/push/test", { method: "POST" });
+        toast("Test sent — check your notification tray!");
+      }
+    } catch (e) { toast(e.message); }
+  });
+}
 
 /* ---------------- router & boot ---------------- */
 function showTabs(active) {
@@ -698,6 +1093,7 @@ document.addEventListener("click", (e) => {
 window.addEventListener("hashchange", route);
 
 (async function boot() {
+  if (!state.token && state.refreshToken) await silentRefresh();
   if (state.token) {
     try {
       const { user } = await api("/me");

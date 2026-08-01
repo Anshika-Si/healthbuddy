@@ -41,7 +41,13 @@ class AppTestCase(unittest.TestCase):
                     "VALUES ('Hydration Week','desc','💧','water',7,?,?)", (today, end))
 
     def register(self, email="a@example.com", name="Asha", password="password123"):
-        res = self.client.post("/api/auth/register", json={"email": email, "name": name, "password": password})
+        """Signup is now OTP-gated: request a code, then confirm it. Tests read
+        the code from the dev payload (EXPOSE_RESET_TOKEN is on in tests)."""
+        res = self.client.post("/api/auth/register",
+                               json={"email": email, "name": name, "password": password})
+        self.assertEqual(res.status_code, 200, res.get_json())
+        code = res.get_json()["dev_code"]
+        res = self.client.post("/api/auth/register/verify", json={"email": email, "code": code})
         self.assertEqual(res.status_code, 201, res.get_json())
         return res.get_json()["token"]
 
@@ -148,6 +154,44 @@ class TestAPIFlow(AppTestCase):
         res = self.client.post("/api/auth/register",
                                json={"email": "a@example.com", "name": "B", "password": "password123"})
         self.assertEqual(res.status_code, 409)
+
+    def test_signup_requires_correct_otp(self):
+        res = self.client.post("/api/auth/register",
+                               json={"email": "otp@example.com", "name": "O", "password": "password123"})
+        self.assertTrue(res.get_json()["verification_required"])
+        # no account exists until the code is confirmed
+        self.assertIsNone(self.client.post("/api/auth/login",
+                          json={"email": "otp@example.com", "password": "password123"}).get_json().get("token"))
+        bad = self.client.post("/api/auth/register/verify",
+                               json={"email": "otp@example.com", "code": "000000"})
+        self.assertEqual(bad.status_code, 400)
+        self.assertIn("Wrong OTP", bad.get_json()["error"])
+        good = self.client.post("/api/auth/register/verify",
+                                json={"email": "otp@example.com", "code": res.get_json()["dev_code"]})
+        self.assertEqual(good.status_code, 201)
+        self.assertEqual(self.client.post("/api/auth/login",
+                         json={"email": "otp@example.com", "password": "password123"}).status_code, 200)
+
+    def test_password_reset_with_emailed_code(self):
+        self.register(email="r@example.com")
+        f = self.client.post("/api/auth/forgot-password", json={"email": "r@example.com"})
+        self.assertEqual(f.status_code, 200)
+        code = f.get_json()["dev_code"]
+        wrong = self.client.post("/api/auth/reset-password",
+                                 json={"email": "r@example.com", "code": "123456", "password": "newpassword1"})
+        self.assertEqual(wrong.status_code, 400)
+        ok = self.client.post("/api/auth/reset-password",
+                              json={"email": "r@example.com", "code": code, "password": "newpassword1"})
+        self.assertEqual(ok.status_code, 200)
+        self.assertEqual(self.client.post("/api/auth/login",
+                         json={"email": "r@example.com", "password": "password123"}).status_code, 401)
+        self.assertEqual(self.client.post("/api/auth/login",
+                         json={"email": "r@example.com", "password": "newpassword1"}).status_code, 200)
+
+    def test_reset_unknown_email_does_not_leak(self):
+        res = self.client.post("/api/auth/forgot-password", json={"email": "ghost@example.com"})
+        self.assertEqual(res.status_code, 200)
+        self.assertNotIn("dev_code", res.get_json())
 
     def test_login_wrong_password(self):
         self.register()
