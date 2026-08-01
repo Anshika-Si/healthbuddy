@@ -314,35 +314,48 @@ details.fold > .card { margin-top: 0; border-top-left-radius: 0; border-top-righ
 .otp-input { text-align: center; letter-spacing: 10px; font-size: 26px; font-weight: 800;
   font-family: var(--font-display); }
 
-/* ================= BUDDY AVATAR ================= */
-.buddy-stage { position: relative; display: grid; place-items: center; margin: var(--sp-3) auto var(--sp-2);
-  width: 260px; max-width: 84vw; }
-.buddy-ring { position: absolute; inset: 0; width: 100%; height: auto; transform: rotate(-90deg); }
+
+/* ================= BUDDY (character art in the logo ring) ================= */
+.buddy-stage { position: relative; display: grid; place-items: center; gap: 4px;
+  margin: var(--sp-3) auto var(--sp-2); }
+.buddy-orb { position: relative; width: 232px; height: 232px; max-width: 74vw; max-height: 74vw;
+  border: none; background: none; padding: 0; display: grid; place-items: center; }
+.buddy-orb::before {                    /* the soft glow disc behind the buddy */
+  content: ""; position: absolute; inset: 9%; border-radius: 50%;
+  background: radial-gradient(circle at 50% 60%, var(--buddy-disc), transparent 72%);
+  box-shadow: 0 0 42px var(--buddy-glow); transition: box-shadow var(--dur);
+}
+.buddy-ring { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
 .buddy-ring .track { stroke: var(--surface-2); }
 .buddy-ring .arc { stroke: url(#bRing); stroke-linecap: round;
   transition: stroke-dashoffset .9s cubic-bezier(.3,1.2,.4,1); }
-.buddy-tap { background: none; border: none; padding: 0; width: 72%; cursor: pointer; }
-.buddy-svg { width: 100%; height: auto; overflow: visible; }
-.buddy-body { animation: buddyFloat 3.6s ease-in-out infinite; transform-origin: 50% 80%; }
-@keyframes buddyFloat { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-7px) } }
-.buddy-leaf { transform-origin: 4px -70px; animation: leafSway 3s ease-in-out infinite; }
-@keyframes leafSway { 0%,100% { transform: rotate(-6deg) } 50% { transform: rotate(8deg) } }
-.buddy-tap.is-waving .buddy-arm-r { animation: wave .5s ease-in-out 3; transform-origin: 58px 14px; }
-@keyframes wave { 0%,100% { transform: rotate(0) } 50% { transform: rotate(-34deg) } }
-.buddy-tap:active .buddy-body { transform: scale(.96); }
-.buddy-cape { animation: capeFlap 2.4s ease-in-out infinite; transform-origin: 50% 0; }
-@keyframes capeFlap { 0%,100% { transform: skewX(0deg) } 50% { transform: skewX(7deg) } }
-.buddy-flames .flame { animation: flicker 1s ease-in-out infinite; transform-origin: 50% 100%; }
-.buddy-flames .f1 { animation-delay: .18s } .buddy-flames .f2 { animation-delay: .36s }
-.buddy-flames .f3 { animation-delay: .54s }
-@keyframes flicker { 0%,100% { transform: scaleY(1) scaleX(1); opacity: .8 }
-  50% { transform: scaleY(1.28) scaleX(.9); opacity: 1 } }
-.buddy-tap.is-fired { filter: drop-shadow(0 0 18px rgba(255,138,92,.5)); }
-.buddy-caption { text-align: center; display: grid; gap: 2px; justify-items: center; margin-top: -6px; }
-.buddy-score { font: 700 34px var(--font-display); line-height: 1; }
+.buddy-art { position: relative; width: 72%; height: auto; object-fit: contain;
+  filter: drop-shadow(0 6px 14px rgba(0,0,0,.28));
+  animation: buddyFloat 3.8s ease-in-out infinite; }
+.buddy-art.pose-sleepy { width: 80%; animation-duration: 5.5s; }
+@keyframes buddyFloat { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-8px) } }
+.buddy-orb.is-bouncing .buddy-art { animation: buddyBounce .55s cubic-bezier(.3,1.6,.5,1) 2; }
+@keyframes buddyBounce { 0%,100% { transform: translateY(0) scale(1) }
+  40% { transform: translateY(-14px) scale(1.05) } }
+.buddy-orb:active .buddy-art { transform: scale(.97); }
+.buddy-fire { position: absolute; bottom: 6%; font-size: 30px; animation: flicker 1s ease-in-out infinite; }
+@keyframes flicker { 0%,100% { transform: scale(1); opacity: .85 } 50% { transform: scale(1.2); opacity: 1 } }
 
-/* particles used by taps and habit logs */
-.hb-particle { position: absolute; bottom: 18%; font-size: 20px; pointer-events: none;
+/* level-unlocked ring styles */
+.ring-basic  { --buddy-disc: rgba(255,138,92,.20); --buddy-glow: rgba(255,92,138,.28); }
+.ring-bright { --buddy-disc: rgba(255,138,92,.30); --buddy-glow: rgba(255,92,138,.45); }
+.ring-spark  { --buddy-disc: rgba(255,166,120,.34); --buddy-glow: rgba(255,120,160,.55); }
+.ring-gold   { --buddy-disc: rgba(255,209,102,.36); --buddy-glow: rgba(255,190,80,.6); }
+.ring-spark::after { content: "✨"; position: absolute; top: 4%; right: 10%; font-size: 20px;
+  animation: flicker 1.6s ease-in-out infinite; }
+.ring-gold::after { content: "👑"; position: absolute; top: 0; right: 14%; font-size: 22px;
+  animation: flicker 2s ease-in-out infinite; }
+.buddy-orb.is-fired::before { box-shadow: 0 0 56px rgba(255,138,92,.55); }
+.buddy-caption { text-align: center; display: grid; gap: 2px; justify-items: center; }
+.buddy-score { font: 700 32px var(--font-display); line-height: 1.1; }
+
+/* particles */
+.hb-particle { position: absolute; bottom: 18%; font-size: 20px; pointer-events: none; z-index: 3;
   animation: floatUp 1.2s ease-out forwards; }
 @keyframes floatUp { 0% { opacity: 0; transform: translate(0,0) scale(.6) }
   25% { opacity: 1 } 100% { opacity: 0; transform: translate(var(--dx,0), -90px) scale(1.25) } }
@@ -351,27 +364,61 @@ details.fold > .card { margin-top: 0; border-top-left-radius: 0; border-top-righ
 .fx-pop { animation: fxPop .5s cubic-bezier(.3,1.6,.5,1); }
 @keyframes fxPop { 0% { transform: scale(1) } 45% { transform: scale(1.045) } 100% { transform: scale(1) } }
 .fx-splash { animation: fxSplash .7s ease; box-shadow: 0 0 0 2px rgba(79,195,247,.5) inset; }
-@keyframes fxSplash { 0% { background: var(--surface) } 40% { background: rgba(79,195,247,.18) }
-  100% { background: var(--surface) } }
+@keyframes fxSplash { 0%,100% { background: var(--surface) } 40% { background: rgba(79,195,247,.18) } }
 .fx-night { animation: fxNight 2.4s ease; }
-@keyframes fxNight { 0% { background: var(--surface) }
+@keyframes fxNight { 0%,100% { background: var(--surface) }
   30% { background: linear-gradient(160deg,#2b2350,#141031) }
-  75% { background: linear-gradient(160deg,#221c44,#0e0b24) }
-  100% { background: var(--surface) } }
+  75% { background: linear-gradient(160deg,#221c44,#0e0b24) } }
 
-/* steps track with jogging buddy */
+/* steps track */
 .steps-track { position: relative; height: 26px; border-radius: 99px; background: var(--surface-2);
-  overflow: visible; margin: 6px 0 2px; }
+  margin: 6px 0 2px; }
 .steps-fill { height: 100%; border-radius: 99px; background: var(--brand-grad);
   transition: width .8s cubic-bezier(.3,1.2,.4,1); }
-.steps-runner { position: absolute; top: -6px; font-size: 20px; transition: left .8s cubic-bezier(.3,1.2,.4,1); }
+.steps-runner { position: absolute; top: -6px; font-size: 20px;
+  transition: left .8s cubic-bezier(.3,1.2,.4,1); }
 .steps-track.is-done .steps-runner { animation: sprint .6s ease-in-out 2; }
 @keyframes sprint { 0%,100% { transform: translateX(0) } 50% { transform: translateX(6px) } }
 .steps-flag { position: absolute; right: -4px; top: -4px; font-size: 18px; }
 
-/* level-up moment */
+/* level-up */
 .levelup-burst { font-size: 54px; animation: fxPop .6s ease 2; }
-.levelup-buddy { width: 150px; margin: 6px auto 0; }
-@media (prefers-reduced-motion: reduce) {
-  .buddy-body, .buddy-leaf, .buddy-cape, .buddy-flames .flame, .hb-particle { animation: none !important; }
+.levelup-buddy { position: relative; width: 160px; margin: 6px auto 0; display: grid; place-items: center; }
+.levelup-buddy::before { content: ""; position: absolute; inset: 0; border-radius: 50%;
+  background: radial-gradient(circle, var(--buddy-disc), transparent 70%); }
+.levelup-buddy img { position: relative; width: 100%; }
+@media (prefers-reduced-motion: reduce) { .buddy-art, .buddy-fire, .hb-particle { animation: none !important; } }
+
+/* ================= LIGHT THEME =================
+   Warm paper tones so the green buddy and orange logo still pop. Only the
+   tokens change — every component inherits automatically. */
+[data-theme="light"] {
+  --bg: #FBF6EF;
+  --surface: #FFFFFF;
+  --surface-2: #F3EBE1;
+  --line: #E3D7C8;
+  --text: #2B2233;
+  --muted: #6E6479;
+  --brand-a: #FF7A45;
+  --brand-b: #F5427E;
+  --ok: #46A82B;
+  --danger: #E23B3B;
+  --shadow: 0 6px 20px rgba(90,60,40,.12);
 }
+[data-theme="light"] .buddy-ring .track { stroke: #EADFD1; }
+[data-theme="light"] .fx-night { animation: fxNightLight 2.4s ease; }
+@keyframes fxNightLight { 0%,100% { background: var(--surface) }
+  30% { background: linear-gradient(160deg,#4a4478,#2b2350); color: #fff }
+  75% { background: linear-gradient(160deg,#3b3566,#221c44); color: #fff } }
+[data-theme="light"] .chip.done { color: #2f7a1c; }
+[data-theme="light"] .tabbar { background: rgba(255,255,255,.94); }
+[data-theme="light"] .modal-backdrop { background: rgba(60,40,30,.45); }
+[data-theme="light"] .btn-primary { color: #fff; }
+[data-theme="light"] .proto-note { background: #F3EBE1; color: #6E6479; border-color: #E3D7C8; }
+
+/* theme switch control */
+.theme-row { display: flex; align-items: center; gap: 12px; }
+.theme-seg { display: flex; gap: 4px; background: var(--surface-2); padding: 4px; border-radius: 99px; }
+.theme-seg button { border: none; background: none; color: var(--muted); padding: 8px 14px;
+  border-radius: 99px; font: 700 13px var(--font-body); }
+.theme-seg button[aria-pressed="true"] { background: var(--brand-grad); color: #fff; }

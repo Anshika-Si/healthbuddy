@@ -8,7 +8,7 @@ import pathlib
 import shutil
 
 root = pathlib.Path(__file__).resolve().parent.parent
-src = root / "healthbuddy" / "static" / "icon-512.png"
+src = root / "healthbuddy" / "static" / "app-icon.png"
 res = root / "native" / "android" / "app" / "src" / "main" / "res"
 assert src.exists(), "icon-512.png missing"
 assert res.exists(), "run after `npx cap add android`"

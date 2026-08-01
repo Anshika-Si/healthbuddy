@@ -10,6 +10,20 @@ const state = {
   user: null,
 };
 
+/* ---------- theme: dark by default, light optional, remembered ---------- */
+const THEME_KEY = "hb_theme";
+function currentTheme() {
+  try { return localStorage.getItem(THEME_KEY) || "dark"; } catch (_) { return "dark"; }
+}
+function applyTheme(mode) {
+  const resolved = mode === "light" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", resolved);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", resolved === "light" ? "#FBF6EF" : "#1C1526");
+  try { localStorage.setItem(THEME_KEY, resolved); } catch (_) {}
+}
+applyTheme(currentTheme());
+
 /* ---------------- API client ---------------- */
 /* In the native phone app, the screens are bundled locally and talk to the
    server across the network; HB_API_BASE carries the server address then.
@@ -442,6 +456,13 @@ function verifyEmailFlow(email, devCode) {
   document.getElementById("ve-back").onclick = () => go("register");
 }
 
+/* Celebrate the moment a level ticks over — once, not on every repaint. */
+let lastKnownLevel = null;
+function noticeLevelUp(level) {
+  if (lastKnownLevel !== null && level > lastKnownLevel) celebrateLevelUp(level);
+  lastKnownLevel = level;
+}
+
 /* --- forgot password: email → emailed code + new password ---------------- */
 function forgotPasswordFlow() {
   modal(`<h2>Reset your password 🔑</h2>
@@ -486,6 +507,9 @@ function resetPasswordFlow(email, devCode) {
     } catch (e) { err.textContent = e.message; }
   };
 }
+
+const logoImg = (size) =>
+  `<img src="/static/logo-badge.png" width="${size}" height="${size}" alt="" class="brand-logo" aria-hidden="true">`;
 
 views.onboarding = () => {
   $tabbar.classList.add("hidden");
@@ -800,7 +824,7 @@ async function quickLog(h) {
   try {
     const row = $screen.querySelector(`[data-log="${h.type}"]`)?.closest(".check-row");
     const data = await api("/logs", { method: "POST", body: { type: h.type, value } });
-    habitAnimation(h.type, row);
+    habitAnimation(h.type, row, value);
     if (h.type === "mood") moodBurst(row, value);
     rewardFeedback(data);
     if (data.streak >= 2) toast(`${h.emoji} ${data.streak}-day ${h.label.toLowerCase()} streak!`);
@@ -992,6 +1016,16 @@ views.profile = async () => {
           ${s.emoji} ${s.pref_multiplier < 1 ? "muted" : "normal"}</button>`).join("")}</div>
     </div>
     </details>
+    <h2 class="section-gap">Appearance 🎨</h2>
+    <div class="card theme-row">
+      <div class="grow"><strong>Theme</strong>
+        <p class="muted small" style="margin:2px 0 0">Pick whatever's easier on your eyes.</p></div>
+      <div class="theme-seg" role="group" aria-label="Theme">
+        <button data-theme-set="dark" aria-pressed="${currentTheme() === "dark"}">🌙 Dark</button>
+        <button data-theme-set="light" aria-pressed="${currentTheme() === "light"}">☀️ Light</button>
+      </div>
+    </div>
+
     <button class="btn btn-ghost btn-block section-gap" id="signout">Sign out</button>`);
 
   $screen.querySelectorAll("[data-unbuddy]").forEach((b) => b.onclick = async () => {
@@ -1012,6 +1046,11 @@ views.profile = async () => {
     views.profile();
   });
   document.getElementById("signout").onclick = logout;
+  $screen.querySelectorAll("[data-theme-set]").forEach((b) => b.onclick = () => {
+    applyTheme(b.dataset.themeSet);
+    toast(b.dataset.themeSet === "light" ? "Light theme on ☀️" : "Dark theme on 🌙");
+    views.profile();
+  });
   renderPushCard();
 };
 

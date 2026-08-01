@@ -19,8 +19,8 @@ assert url and "YOUR-APP-NAME" not in url, \
 www = root / "native" / "www"
 shutil.rmtree(www, ignore_errors=True)
 (www / "static").mkdir(parents=True)
-for f in (root / "healthbuddy" / "static").iterdir():
-    shutil.copy(f, www / "static" / f.name)
+# copytree so subfolders (buddy/ character art) come along too
+shutil.copytree(root / "healthbuddy" / "static", www / "static", dirs_exist_ok=True)
 
 html = (root / "healthbuddy" / "templates" / "index.html").read_text()
 inject = f"<script>window.HB_API_BASE='{url}';</script>\n"
