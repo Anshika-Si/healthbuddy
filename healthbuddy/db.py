@@ -1,9 +1,30 @@
-"""SQLite data layer.
+"""Data layer — speaks SQLite (local dev) and Postgres (production).
 
-Deliberately thin: raw SQL behind small helpers so the storage engine can be
-swapped for Postgres (psycopg + the same queries) without touching services.
+Why both: Render's free web services have a temporary filesystem, so a
+SQLite file there is wiped on every restart and every deploy — real accounts
+would silently vanish. Postgres (Neon/Render/Supabase) keeps data forever.
+
+Set HB_DATABASE_URL (postgres://…) and the app uses Postgres; leave it unset
+and it uses a local SQLite file exactly as before. Nothing else in the app
+changes, because the queries stay written in the SQLite dialect and this
+module translates them on the way out:
+
+    ?                       → %s
+    datetime('now')         → to_char(now() at time zone 'utc', …)
+    datetime('now','-1 h')  → same, minus an interval
+    date(col)               → to_char(col::timestamp, 'YYYY-MM-DD')
+    INSERT OR IGNORE        → INSERT … ON CONFLICT DO NOTHING
+    AUTOINCREMENT           → SERIAL
+
+Timestamps stay TEXT in both engines, so string comparisons, ISO parsing in
+Python, and every existing query behave identically. That symmetry is the
+whole point: the 49-test suite that passes on SQLite is meaningful for
+Postgres too.
 """
+import os
+import re
 import sqlite3
+
 from flask import current_app, g
 
 SCHEMA = """
@@ -209,20 +230,170 @@ CREATE TABLE IF NOT EXISTS game_scores (
 """
 
 
+def _pg_url():
+    """Production database URL, if one is configured."""
+    try:
+        return current_app.config.get("DATABASE_URL")
+    except RuntimeError:                      # outside an app context
+        return os.environ.get("HB_DATABASE_URL")
+
+
+def is_postgres():
+    return bool(_pg_url())
+
+
+# ---------------------------------------------------------------- translation
+_DT_MOD = re.compile(r"datetime\(\s*'now'\s*,\s*'([^']+)'\s*\)", re.I)
+_DT_PARAM = re.compile(r"datetime\(\s*'now'\s*,\s*\?\s*\)", re.I)
+_DT_NOW = re.compile(r"datetime\(\s*'now'\s*\)", re.I)
+_DATE_NOW = re.compile(r"date\(\s*'now'\s*\)", re.I)
+_DATE_COL = re.compile(r"\bdate\(\s*([a-zA-Z_][a-zA-Z0-9_.]*)\s*\)")
+
+_UTC = "(now() at time zone 'utc')"
+_TS_FMT = "'YYYY-MM-DD HH24:MI:SS'"
+
+
+def translate(sql):
+    """Rewrite one SQLite statement into its Postgres equivalent."""
+    out = sql
+    out = _DT_PARAM.sub(f"to_char({_UTC} + (%s)::interval, {_TS_FMT})", out)
+    out = _DT_MOD.sub(lambda m: f"to_char({_UTC} + interval '{m.group(1)}', {_TS_FMT})", out)
+    out = _DT_NOW.sub(f"to_char({_UTC}, {_TS_FMT})", out)
+    out = _DATE_NOW.sub(f"to_char({_UTC}, 'YYYY-MM-DD')", out)
+    out = _DATE_COL.sub(lambda m: f"to_char({m.group(1)}::timestamp, 'YYYY-MM-DD')", out)
+
+    ignore = re.match(r"\s*INSERT\s+OR\s+IGNORE\s+INTO", out, re.I)
+    if ignore:
+        out = re.sub(r"^\s*INSERT\s+OR\s+IGNORE\s+INTO", "INSERT INTO", out, flags=re.I)
+
+    # ? → %s, but never inside quoted strings
+    pieces, in_str, buf = [], False, []
+    for ch in out:
+        if ch == "'":
+            in_str = not in_str
+        buf.append("%s" if (ch == "?" and not in_str) else ch)
+    out = "".join(buf)
+    out = out.replace("%s%s", "%s%s")             # no-op, kept explicit for clarity
+
+    if ignore:
+        out = out.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
+    return out
+
+
+def translate_ddl(script):
+    """Schema DDL → Postgres types."""
+    out = script
+    out = re.sub(r"INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT", "SERIAL PRIMARY KEY", out, flags=re.I)
+    out = re.sub(r"\bREAL\b", "DOUBLE PRECISION", out, flags=re.I)
+    out = _DT_NOW.sub(f"to_char({_UTC}, {_TS_FMT})", out)
+    out = _DATE_NOW.sub(f"to_char({_UTC}, 'YYYY-MM-DD')", out)
+    return out
+
+
+# ---------------------------------------------------------------- connections
+def _connect_pg():
+    import psycopg
+    from psycopg.rows import dict_row
+    conn = psycopg.connect(_pg_url(), row_factory=dict_row, autocommit=False)
+    return conn
+
+
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(current_app.config["DATABASE"])
-        g.db.row_factory = sqlite3.Row
-        g.db.execute("PRAGMA foreign_keys = ON")
+        if is_postgres():
+            g.db = _connect_pg()
+            g.is_pg = True
+        else:
+            g.db = sqlite3.connect(current_app.config["DATABASE"])
+            g.db.row_factory = sqlite3.Row
+            g.db.execute("PRAGMA foreign_keys = ON")
+            g.is_pg = False
     return g.db
 
 
 def close_db(_exc=None):
     db = g.pop("db", None)
+    g.pop("is_pg", None)
     if db is not None:
         db.close()
 
 
+# ---------------------------------------------------------------- query/exec
+def query(sql, args=(), one=False):
+    db = get_db()
+    if is_postgres():
+        with db.cursor() as cur:
+            cur.execute(translate(sql), tuple(args))
+            rows = [_clean(r) for r in cur.fetchall()]
+    else:
+        rows = db.execute(sql, args).fetchall()
+    return (rows[0] if rows else None) if one else rows
+
+
+def _tables_with_id():
+    """Tables that actually have an `id` column, so INSERTs only ask for
+    RETURNING id where it exists (no wasted failed statement + rollback)."""
+    out = set()
+    for m in re.finditer(r"CREATE TABLE IF NOT EXISTS (\w+)\s*\((.*?)\n\);", SCHEMA, re.S):
+        if re.search(r"\bid\s+INTEGER\s+PRIMARY\s+KEY", m.group(2), re.I):
+            out.add(m.group(1).lower())
+    return out
+
+
+_ID_TABLES = None
+
+
+def _has_id(stmt):
+    global _ID_TABLES
+    if _ID_TABLES is None:
+        _ID_TABLES = _tables_with_id()
+    m = re.match(r"\s*INSERT\s+INTO\s+(\w+)", stmt, re.I)
+    return bool(m) and m.group(1).lower() in _ID_TABLES
+
+
+def execute(sql, args=()):
+    """Run a write. Returns the new row id for INSERTs (like sqlite lastrowid)."""
+    db = get_db()
+    if not is_postgres():
+        cur = db.execute(sql, args)
+        db.commit()
+        return cur.lastrowid
+
+    stmt = translate(sql)
+    is_insert = _has_id(stmt) and " RETURNING " not in stmt.upper()
+    with db.cursor() as cur:
+        if is_insert:
+            try:
+                cur.execute(stmt + " RETURNING id", tuple(args))
+                row = cur.fetchone()
+                db.commit()
+                return row["id"] if row else None
+            except Exception as exc:                  # table has no id column
+                if getattr(exc, "sqlstate", "") not in ("42703",):
+                    db.rollback()
+                    raise
+                db.rollback()
+        cur.execute(stmt, tuple(args))
+        db.commit()
+    return None
+
+
+def _clean(row):
+    """Postgres may hand back date/datetime objects; the app expects the ISO
+    strings SQLite produces, so normalize once, here."""
+    import datetime as _dt
+    out = {}
+    for k, v in row.items():
+        if isinstance(v, _dt.datetime):
+            out[k] = v.strftime("%Y-%m-%d %H:%M:%S")
+        elif isinstance(v, _dt.date):
+            out[k] = v.isoformat()
+        else:
+            out[k] = v
+    return out
+
+
+# ---------------------------------------------------------------- migrations
 MIGRATIONS = [
     # (table, column, ALTER statement) — applied only when the column is missing,
     # so existing production data is never touched or lost.
@@ -237,26 +408,31 @@ MIGRATIONS = [
 ]
 
 
+def _columns(db, table):
+    if is_postgres():
+        with db.cursor() as cur:
+            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+                        (table,))
+            return {r["column_name"] for r in cur.fetchall()}
+    return {r[1] for r in db.execute(f"PRAGMA table_info({table})")}
+
+
 def init_db(app):
     """Create tables, then apply additive column migrations (safe on live DBs)."""
     with app.app_context():
         db = get_db()
-        db.executescript(SCHEMA)
+        if is_postgres():
+            with db.cursor() as cur:
+                cur.execute(translate_ddl(SCHEMA))
+            db.commit()
+        else:
+            db.executescript(SCHEMA)
         for table, col, stmt in MIGRATIONS:
-            cols = {r[1] for r in db.execute(f"PRAGMA table_info({table})")}
-            if col not in cols:
-                db.execute(stmt)
+            if col not in _columns(db, table):
+                if is_postgres():
+                    with db.cursor() as cur:
+                        cur.execute(stmt)
+                else:
+                    db.execute(stmt)
         db.commit()
-
-
-def query(sql, args=(), one=False):
-    cur = get_db().execute(sql, args)
-    rows = cur.fetchall()
-    return (rows[0] if rows else None) if one else rows
-
-
-def execute(sql, args=()):
-    db = get_db()
-    cur = db.execute(sql, args)
-    db.commit()
-    return cur.lastrowid
+        app.logger.info("[db] using %s", "postgres" if is_postgres() else "sqlite")

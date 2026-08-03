@@ -296,3 +296,37 @@ class TestAPIFlow(AppTestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class DialectTranslationTests(unittest.TestCase):
+    """The Postgres translation layer is what keeps one set of queries working
+    on both engines — pin its behaviour so a future edit can't silently break
+    production while local SQLite still looks fine."""
+
+    def test_placeholders_and_functions(self):
+        from healthbuddy.db import translate
+        out = translate("SELECT * FROM t WHERE a=? AND created_at >= datetime('now','-7 days')")
+        self.assertIn("%s", out)
+        self.assertNotIn("?", out)
+        self.assertIn("interval '-7 days'", out)
+        self.assertNotIn("datetime(", out)
+
+    def test_date_and_insert_or_ignore(self):
+        from healthbuddy.db import translate
+        self.assertIn("to_char(created_at::timestamp, 'YYYY-MM-DD')",
+                      translate("SELECT date(created_at) FROM t"))
+        out = translate("INSERT OR IGNORE INTO buddies (user_id, buddy_id) VALUES (?,?)")
+        self.assertTrue(out.startswith("INSERT INTO"))
+        self.assertTrue(out.endswith("ON CONFLICT DO NOTHING"))
+
+    def test_question_mark_inside_string_is_left_alone(self):
+        from healthbuddy.db import translate
+        out = translate("SELECT 1 FROM cards WHERE title='really?' AND id=?")
+        self.assertIn("'really?'", out)
+        self.assertIn("id=%s", out)
+
+    def test_ddl_types(self):
+        from healthbuddy.db import translate_ddl
+        out = translate_ddl("CREATE TABLE x (id INTEGER PRIMARY KEY AUTOINCREMENT, v REAL);")
+        self.assertIn("SERIAL PRIMARY KEY", out)
+        self.assertIn("DOUBLE PRECISION", out)

@@ -55,6 +55,20 @@ def create_app(overrides=None):
         response.headers["Cache-Control"] = "no-cache"  # always fetch the latest sw.js
         return response
 
+    @app.get("/health/db")
+    def health_db():
+        """Which engine is live, and can it actually read and write?
+        Open this after deploying — it answers 'is my data safe?' instantly."""
+        from .db import is_postgres, query
+        try:
+            users = query("SELECT COUNT(*) AS n FROM users", one=True)["n"]
+            cards = query("SELECT COUNT(*) AS n FROM notification_cards", one=True)["n"]
+            return {"engine": "postgres" if is_postgres() else "sqlite (temporary!)",
+                    "persistent": bool(is_postgres()), "users": users, "cards": cards, "ok": True}
+        except Exception as exc:
+            return {"ok": False, "engine": "postgres" if is_postgres() else "sqlite",
+                    "error": str(exc)}, 500
+
     @app.get("/health")
     def health():
         return {"status": "ok"}

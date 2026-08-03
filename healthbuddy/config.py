@@ -7,6 +7,10 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 class Config:
     SECRET_KEY = os.environ.get("HB_SECRET_KEY", "dev-only-change-me")
     DATABASE = os.environ.get("HB_DATABASE", os.path.join(BASE_DIR, "healthbuddy.db"))
+    # Postgres in production (Neon/Render/Supabase). Unset → local SQLite file.
+    # Render's free disk is temporary, so a real database URL is what keeps
+    # accounts, logs and streaks alive across restarts and deploys.
+    DATABASE_URL = os.environ.get("HB_DATABASE_URL", "").strip()
     JWT_ALGORITHM = "HS256"
     # Short-lived access token (sent on every request). Kept small on purpose —
     # if one leaks it's only useful for a short window.
