@@ -27,6 +27,10 @@ from email.utils import formataddr
 
 BRAND = "#FF5C8A"
 
+#: Mail APIs sit behind Cloudflare, which blocks requests that don't identify
+#: themselves (it answers "error code: 1010"). A real User-Agent avoids that.
+UA = "HealthBuddy/1.0 (+https://github.com/healthbuddy; python-urllib)"
+
 #: last delivery attempt — read by /health/mail (contains no secrets)
 LAST_RESULT = {"attempted": False}
 
@@ -85,7 +89,9 @@ def _send_resend(cfg, to_addr, subject, text, html):
     req = urllib.request.Request(
         "https://api.resend.com/emails", data=payload, method="POST",
         headers={"Authorization": f"Bearer {cfg['resend_key']}",
-                 "Content-Type": "application/json"})
+                 "Content-Type": "application/json",
+                 "Accept": "application/json",
+                 "User-Agent": UA})
     with urllib.request.urlopen(req, timeout=20) as r:
         r.read()
 
@@ -98,7 +104,8 @@ def _send_brevo(cfg, to_addr, subject, text, html):
     }).encode()
     req = urllib.request.Request(
         "https://api.brevo.com/v3/smtp/email", data=payload, method="POST",
-        headers={"api-key": cfg["brevo_key"], "Content-Type": "application/json"})
+        headers={"api-key": cfg["brevo_key"], "Content-Type": "application/json",
+                 "Accept": "application/json", "User-Agent": UA})
     with urllib.request.urlopen(req, timeout=20) as r:
         r.read()
 
@@ -131,6 +138,14 @@ def _explain(exc):
             detail = exc.read().decode()[:200]
         except Exception:
             detail = ""
+        if "1010" in detail:
+            return ("Blocked by Cloudflare before reaching the mail provider "
+                    "(error 1010) — the request needs a User-Agent header. "
+                    "Update to the latest build.")
+        if exc.code == 403 and "testing emails" in detail:
+            return ("Resend is in test mode: it will only deliver to the email "
+                    "address you signed up with. Send the test there, or verify "
+                    "a domain at resend.com/domains to reach anyone.")
         if exc.code in (401, 403):
             return f"API key rejected ({exc.code}). Check HB_RESEND_API_KEY. {detail}"
         if exc.code == 422:
