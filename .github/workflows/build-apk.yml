@@ -60,7 +60,7 @@ jobs:
           cp plugin-src/StepsPlugin.java plugin-src/UsagePlugin.java plugin-src/MainActivity.java \
              android/app/src/main/java/app/healthbuddy/
 
-      - name: Add the sensor permissions to the manifest
+      - name: Add the sensor + notification permissions to the manifest
         working-directory: native
         run: |
           python3 - << 'EOF'
@@ -73,6 +73,13 @@ jobs:
               s = s.replace("</manifest>",
                   '    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />\n'
                   '    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />\n'
+                  '</manifest>')
+          if "POST_NOTIFICATIONS" not in s:
+              # Required on Android 13+ (API 33+) — without this declared,
+              # @capacitor/local-notifications silently fails to show
+              # anything even after the in-app permission prompt succeeds.
+              s = s.replace("</manifest>",
+                  '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n'
                   '</manifest>')
           p.write_text(s)
           print("manifest patched")
@@ -93,6 +100,7 @@ jobs:
           grep -q "registerPlugin(StepsPlugin.class)" android/app/src/main/java/app/healthbuddy/MainActivity.java || { echo "::error::MainActivity was not replaced — sensor plugins will be missing"; exit 1; }
           test -f android/app/src/main/java/app/healthbuddy/StepsPlugin.java || { echo "::error::StepsPlugin.java missing from the Android project"; exit 1; }
           grep -q "ACTIVITY_RECOGNITION" android/app/src/main/AndroidManifest.xml || { echo "::error::Manifest permissions were not added"; exit 1; }
+          grep -q "POST_NOTIFICATIONS" android/app/src/main/AndroidManifest.xml || { echo "::error::POST_NOTIFICATIONS permission missing — notifications will silently fail on Android 13+"; exit 1; }
           echo "assembly verified: screens bundled, plugins present, permissions set"
 
       - name: Apply the HealthBuddy app icon
