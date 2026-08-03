@@ -1,94 +1,196 @@
-"""Email delivery over plain SMTP — works with Gmail, Brevo, Resend, SES, etc.
+"""Email delivery with visible failures.
 
-Configure with environment variables (see EMAIL_SETUP.md):
-    HB_SMTP_HOST      e.g. smtp.gmail.com
-    HB_SMTP_PORT      587 (STARTTLS, default) or 465 (SSL)
-    HB_SMTP_USER      the login for the SMTP service
-    HB_SMTP_PASS      app password / API key
-    HB_MAIL_FROM      address subscribers see (defaults to HB_SMTP_USER)
-    HB_MAIL_FROM_NAME display name (default "HealthBuddy")
+Three ways to send, tried in this order (first one configured wins):
 
-If nothing is configured the app still works: codes are written to the server
-log, and in dev mode the API returns them so the flow stays testable. Nothing
-is ever silently faked to the user.
+  1. Resend HTTPS API   HB_RESEND_API_KEY   ← most reliable on cloud hosts
+  2. Brevo  HTTPS API   HB_BREVO_API_KEY
+  3. SMTP               HB_SMTP_HOST / HB_SMTP_USER / HB_SMTP_PASS
 
-Sending happens on a background thread because SMTP handshakes can take
-several seconds and no user should watch a spinner for that.
+Why the HTTPS options exist: some hosts throttle or block outbound SMTP, and
+when that happens SMTP fails silently in a background thread — exactly the
+"no email ever arrives and there's no clue why" trap. So:
+
+  * OTP emails are sent BLOCKING, so the API reports a real failure instead
+    of pretending everything is fine.
+  * The last attempt (ok/failed + reason, never credentials) is remembered
+    and exposed at GET /health/mail for instant diagnosis.
 """
+import json
 import os
 import smtplib
 import ssl
 import threading
+import urllib.error
+import urllib.request
 from email.message import EmailMessage
 from email.utils import formataddr
 
 BRAND = "#FF5C8A"
 
+#: last delivery attempt — read by /health/mail (contains no secrets)
+LAST_RESULT = {"attempted": False}
+
 
 def config():
-    host = os.environ.get("HB_SMTP_HOST", "").strip()
     user = os.environ.get("HB_SMTP_USER", "").strip()
     return {
-        "host": host,
-        "port": int(os.environ.get("HB_SMTP_PORT", "587")),
+        "resend_key": os.environ.get("HB_RESEND_API_KEY", "").strip(),
+        "brevo_key": os.environ.get("HB_BREVO_API_KEY", "").strip(),
+        "host": os.environ.get("HB_SMTP_HOST", "").strip(),
+        "port": int(os.environ.get("HB_SMTP_PORT", "587") or 587),
         "user": user,
         "password": os.environ.get("HB_SMTP_PASS", ""),
-        "from_addr": os.environ.get("HB_MAIL_FROM", "").strip() or user,
+        "from_addr": (os.environ.get("HB_MAIL_FROM", "").strip() or user
+                      or "onboarding@resend.dev"),
         "from_name": os.environ.get("HB_MAIL_FROM_NAME", "HealthBuddy"),
     }
 
 
-def is_configured():
+def provider():
     c = config()
-    return bool(c["host"] and c["user"] and c["password"] and c["from_addr"])
+    if c["resend_key"]:
+        return "resend"
+    if c["brevo_key"]:
+        return "brevo"
+    if c["host"] and c["user"] and c["password"]:
+        return "smtp"
+    return None
 
 
-def _deliver(cfg, message):
+def is_configured():
+    return provider() is not None
+
+
+def status():
+    """Safe summary for the diagnostics endpoint — no keys or passwords."""
+    c = config()
+    return {
+        "provider": provider() or "none",
+        "configured": is_configured(),
+        "from": c["from_addr"] or None,
+        "smtp_host": c["host"] or None,
+        "smtp_port": c["port"] if c["host"] else None,
+        "smtp_user_set": bool(c["user"]),
+        "smtp_pass_set": bool(c["password"]),
+        "last_attempt": LAST_RESULT,
+    }
+
+
+# --------------------------------------------------------------- transports
+def _send_resend(cfg, to_addr, subject, text, html):
+    payload = json.dumps({
+        "from": f"{cfg['from_name']} <{cfg['from_addr']}>",
+        "to": [to_addr], "subject": subject, "text": text, "html": html or text,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.resend.com/emails", data=payload, method="POST",
+        headers={"Authorization": f"Bearer {cfg['resend_key']}",
+                 "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        r.read()
+
+
+def _send_brevo(cfg, to_addr, subject, text, html):
+    payload = json.dumps({
+        "sender": {"name": cfg["from_name"], "email": cfg["from_addr"]},
+        "to": [{"email": to_addr}], "subject": subject,
+        "textContent": text, "htmlContent": html or text,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.brevo.com/v3/smtp/email", data=payload, method="POST",
+        headers={"api-key": cfg["brevo_key"], "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        r.read()
+
+
+def _send_smtp(cfg, to_addr, subject, text, html):
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = formataddr((cfg["from_name"], cfg["from_addr"]))
+    msg["To"] = to_addr
+    msg.set_content(text)
+    if html:
+        msg.add_alternative(html, subtype="html")
     context = ssl.create_default_context()
     if cfg["port"] == 465:
         with smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=20, context=context) as s:
             s.login(cfg["user"], cfg["password"])
-            s.send_message(message)
+            s.send_message(msg)
     else:
         with smtplib.SMTP(cfg["host"], cfg["port"], timeout=20) as s:
             s.ehlo()
             s.starttls(context=context)
             s.login(cfg["user"], cfg["password"])
-            s.send_message(message)
+            s.send_message(msg)
 
 
-def send(to_addr, subject, text_body, html_body=None, logger=None):
-    """Queue an email. Returns True if handed to the mail thread, False if no
-    provider is configured (caller then relies on the logged fallback)."""
-    cfg = config()
-    if not is_configured():
+def _explain(exc):
+    """Turn provider errors into something a human can act on."""
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            detail = exc.read().decode()[:200]
+        except Exception:
+            detail = ""
+        if exc.code in (401, 403):
+            return f"API key rejected ({exc.code}). Check HB_RESEND_API_KEY. {detail}"
+        if exc.code == 422:
+            return ("Sender address not allowed yet — verify your domain, or send "
+                    f"from onboarding@resend.dev while testing. {detail}")
+        return f"HTTP {exc.code} from the mail provider. {detail}"
+    if isinstance(exc, smtplib.SMTPAuthenticationError):
+        return ("Gmail rejected the login. Use a 16-character App Password (not your "
+                "normal password), delete the spaces, and make sure 2-Step "
+                "Verification is ON for that account.")
+    if isinstance(exc, (TimeoutError, OSError)) and "timed out" in str(exc).lower():
+        return ("Connection to the mail server timed out — this host may block SMTP. "
+                "Switch to the Resend API (HB_RESEND_API_KEY).")
+    return f"{type(exc).__name__}: {exc}"
+
+
+def send(to_addr, subject, text_body, html_body=None, logger=None, blocking=True):
+    """Returns (ok, error_message). Never raises — callers decide what to do."""
+    global LAST_RESULT
+    prov = provider()
+    if prov is None:
+        LAST_RESULT = {"attempted": True, "ok": False, "provider": "none",
+                       "error": "No mail provider configured (set HB_RESEND_API_KEY "
+                                "or the HB_SMTP_* variables)."}
         if logger:
             logger.warning("[mail] not configured — would have sent %r to %s", subject, to_addr)
-        return False
+        return False, LAST_RESULT["error"]
 
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = formataddr((cfg["from_name"], cfg["from_addr"]))
-    msg["To"] = to_addr
-    msg.set_content(text_body)
-    if html_body:
-        msg.add_alternative(html_body, subtype="html")
+    cfg = config()
+    fn = {"resend": _send_resend, "brevo": _send_brevo, "smtp": _send_smtp}[prov]
 
-    def worker():
+    def attempt():
+        global LAST_RESULT
         try:
-            _deliver(cfg, msg)
+            fn(cfg, to_addr, subject, text_body, html_body)
+            LAST_RESULT = {"attempted": True, "ok": True, "provider": prov, "to": _mask(to_addr)}
             if logger:
-                logger.info("[mail] sent %r to %s", subject, to_addr)
-        except Exception as exc:            # network/auth problems must not crash a request
+                logger.info("[mail] sent %r to %s via %s", subject, to_addr, prov)
+            return True, None
+        except Exception as exc:
+            reason = _explain(exc)
+            LAST_RESULT = {"attempted": True, "ok": False, "provider": prov,
+                           "to": _mask(to_addr), "error": reason}
             if logger:
-                logger.error("[mail] FAILED to %s: %s", to_addr, exc)
+                logger.error("[mail] FAILED via %s to %s: %s", prov, to_addr, reason)
+            return False, reason
 
-    threading.Thread(target=worker, daemon=True).start()
-    return True
+    if blocking:
+        return attempt()
+    threading.Thread(target=attempt, daemon=True).start()
+    return True, None
 
 
+def _mask(addr):
+    name, _, domain = (addr or "").partition("@")
+    return (name[:2] + "***@" + domain) if domain else "***"
+
+
+# ------------------------------------------------------------------ templates
 def _shell(title, intro, code, outro):
-    """One friendly template for both verify and reset — big readable code."""
     return f"""<!DOCTYPE html>
 <html><body style="margin:0;background:#F6F1EA;font-family:'Segoe UI',Helvetica,Arial,sans-serif">
   <div style="max-width:480px;margin:32px auto;background:#fff;border-radius:18px;overflow:hidden;
@@ -113,20 +215,16 @@ def send_verification_code(to_addr, code, logger=None):
     text = (f"Welcome to HealthBuddy!\n\nYour verification code is: {code}\n\n"
             "It expires in 10 minutes. If you didn't sign up, you can ignore this email.")
     html = _shell("Confirm your email 🌱",
-                  "Pop this code into the app to finish setting up your account. "
-                  "Then your buddy can start nudging you.",
-                  code,
-                  "This code expires in 10 minutes. Didn't sign up? Just ignore this email.")
+                  "Pop this code into the app to finish setting up your account.",
+                  code, "This code expires in 10 minutes. Didn't sign up? Ignore this email.")
     return send(to_addr, "Your HealthBuddy verification code", text, html, logger)
 
 
 def send_reset_code(to_addr, code, logger=None):
     text = (f"Password reset for HealthBuddy.\n\nYour reset code is: {code}\n\n"
-            "It expires in 10 minutes. If you didn't ask for this, ignore this email — "
-            "your password stays unchanged.")
+            "It expires in 10 minutes. If you didn't ask for this, ignore this email.")
     html = _shell("Reset your password 🔑",
                   "Enter this code in the app, then choose a new password.",
-                  code,
-                  "This code expires in 10 minutes. Didn't request it? Ignore this email — "
-                  "your password hasn't changed.")
+                  code, "This code expires in 10 minutes. Didn't request it? "
+                        "Ignore this email — your password hasn't changed.")
     return send(to_addr, "Your HealthBuddy password reset code", text, html, logger)

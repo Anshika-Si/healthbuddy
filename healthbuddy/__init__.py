@@ -55,6 +55,23 @@ def create_app(overrides=None):
         response.headers["Cache-Control"] = "no-cache"  # always fetch the latest sw.js
         return response
 
+    @app.get("/health/mail")
+    def health_mail():
+        """Is email actually working? Answers in one look, with no secrets.
+        Add ?to=you@example.com to send yourself a real test message."""
+        from flask import request
+        from .services import mailer
+        info = mailer.status()
+        target = request.args.get("to")
+        if target:
+            ok, reason = mailer.send(
+                target, "HealthBuddy test email",
+                "If you're reading this, HealthBuddy can send email. 🎉",
+                "<p>If you're reading this, HealthBuddy can send email. 🎉</p>",
+                app.logger)
+            info["test_send"] = {"to": target, "ok": ok, "error": reason}
+        return info
+
     @app.get("/health/db")
     def health_db():
         """Which engine is live, and can it actually read and write?

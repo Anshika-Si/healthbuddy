@@ -382,8 +382,8 @@ function authForm(mode) {
       if (isReg) body.name = document.getElementById("f-name").value;
       const data = await api("/auth/" + mode, { method: "POST", body });
       if (data.verification_required) {          // signup: email must be proven first
-        toast(data.message);
-        return verifyEmailFlow(data.email, data.dev_code || "");
+        toast(data.email_sent ? data.message : "Couldn't send the email — see the note on the next screen.");
+        return verifyEmailFlow(data.email, data.dev_code || "", data.email_sent !== false);
       }
       saveSession(data);
       go(data.user.onboarded ? "home" : "onboarding");
@@ -406,7 +406,7 @@ function otpBoxHTML(idPrefix, label) {
            autocomplete="one-time-code" placeholder="• • • • • •"></div>`;
 }
 
-function verifyEmailFlow(email, devCode) {
+function verifyEmailFlow(email, devCode, emailSent = true) {
   $tabbar.classList.add("hidden");
   render(`
     <div style="max-width:400px;margin:40px auto 0;text-align:center">
@@ -414,7 +414,8 @@ function verifyEmailFlow(email, devCode) {
       <h1>Check your inbox</h1>
       <p class="muted">We sent a 6-digit code to <strong>${esc(email)}</strong>.
       Enter it below to finish creating your account.</p>
-      ${devCode ? `<p class="muted small">Dev mode (no mail provider configured): your code is <strong>${esc(devCode)}</strong>.</p>` : ""}
+      ${emailSent ? "" : `<p class="form-error">We couldn't send that email. The server's mail settings need attention — open <strong>/health/mail</strong> on your app's web address to see exactly why.</p>`}
+      ${devCode ? `<p class="muted small">Dev mode: your code is <strong>${esc(devCode)}</strong>.</p>` : ""}
       <div style="text-align:left">${otpBoxHTML("ve", "Verification code")}</div>
       <p class="form-error" id="ve-err" role="alert"></p>
       <button class="btn btn-primary btn-block" id="ve-submit">Verify & continue</button>
@@ -440,6 +441,7 @@ function verifyEmailFlow(email, devCode) {
   const resend = document.getElementById("ve-resend");
   let cooldown = 60;
   const tick = setInterval(() => {
+    if (!document.body.contains(resend)) return clearInterval(tick);   // left the screen
     cooldown -= 1;
     if (cooldown <= 0) { clearInterval(tick); resend.disabled = false; resend.textContent = "Resend code"; }
     else resend.textContent = `Resend code in ${cooldown}s`;
@@ -1112,8 +1114,12 @@ function showTabs(active) {
     t.classList.toggle("active", t.dataset.route === active));
 }
 
-function go(route) {
-  location.hash = route;
+function go(target) {
+  /* Setting the same hash fires no hashchange event, so screens reached by a
+     direct function call (e.g. the OTP screen) could never navigate "back" to
+     the route they came from. Re-render explicitly when the hash matches. */
+  if (location.hash === "#" + target) route();
+  else location.hash = target;
 }
 
 async function route() {

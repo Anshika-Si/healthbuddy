@@ -29,16 +29,18 @@ def body():
 # ---------- Auth ----------
 
 def _send_code(email, purpose, kind_sender):
-    """Create a code and hand it to the mail thread. Returns the dev payload
-    (only populated when no mail provider is configured AND dev mode is on),
-    so testing never gets blocked by email setup."""
-    from ..services import mailer, otp as otp_svc
+    """Create a code and actually try to deliver it. The result is reported
+    honestly: `email_sent` tells the client whether delivery worked, and the
+    reason is logged (and surfaced at /health/mail) when it didn't."""
+    from ..services import otp as otp_svc
     code = otp_svc.create(email, purpose)
-    delivered = kind_sender(email, code, current_app.logger)
-    extra = {}
+    delivered, reason = kind_sender(email, code, current_app.logger)
+    extra = {"email_sent": bool(delivered)}
     if not delivered:
-        current_app.logger.info("[otp] %s code for %s is %s (no mail provider configured)",
-                                purpose, email, code)
+        current_app.logger.info("[otp] %s code for %s is %s (delivery failed: %s)",
+                                purpose, email, code, reason)
+        extra["email_error"] = ("We couldn't send the email just now. "
+                                "Check /health/mail for the reason.")
         if current_app.config.get("EXPOSE_RESET_TOKEN"):
             extra["dev_code"] = code
     return extra
