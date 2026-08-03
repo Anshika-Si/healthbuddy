@@ -1,6 +1,8 @@
 """HealthBuddy application factory."""
 from flask import Flask, render_template
 
+APP_BUILD = "2026-08-04-mail-ua"   # bump when shipping
+
 from .config import Config
 from .db import close_db, init_db
 
@@ -88,6 +90,9 @@ def create_app(overrides=None):
 
     @app.get("/health")
     def health():
-        return {"status": "ok"}
+        """`build` tells you which version is actually live — if it doesn't
+        match what you just pushed, the deploy didn't land."""
+        return {"status": "ok", "build": APP_BUILD,
+                "features": ["otp-email", "postgres", "buddy-art", "light-theme"]}
 
     return app
