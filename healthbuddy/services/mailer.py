@@ -146,8 +146,13 @@ def _explain(exc):
             return ("Resend is in test mode: it will only deliver to the email "
                     "address you signed up with. Send the test there, or verify "
                     "a domain at resend.com/domains to reach anyone.")
+        if "sender" in detail.lower() and "not valid" in detail.lower():
+            return ("Brevo doesn't recognise the sender address yet. Add it under "
+                    "Senders, Domains & Dedicated IPs → Senders, click the link in "
+                    "the confirmation email, then set HB_MAIL_FROM to that address.")
         if exc.code in (401, 403):
-            return f"API key rejected ({exc.code}). Check HB_RESEND_API_KEY. {detail}"
+            return (f"API key rejected ({exc.code}). Check the key you set "
+                    f"(HB_BREVO_API_KEY or HB_RESEND_API_KEY). {detail}")
         if exc.code == 422:
             return ("Sender address not allowed yet — verify your domain, or send "
                     f"from onboarding@resend.dev while testing. {detail}")

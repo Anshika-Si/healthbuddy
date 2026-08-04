@@ -330,3 +330,18 @@ class DialectTranslationTests(unittest.TestCase):
         out = translate_ddl("CREATE TABLE x (id INTEGER PRIMARY KEY AUTOINCREMENT, v REAL);")
         self.assertIn("SERIAL PRIMARY KEY", out)
         self.assertIn("DOUBLE PRECISION", out)
+
+
+class FrontendSmokeTest(unittest.TestCase):
+    """Render every screen in a headless DOM so a missing helper (a constant
+    moved or dropped during an edit) fails here instead of in someone's app."""
+
+    def test_all_screens_render(self):
+        import shutil
+        import subprocess
+        if not shutil.which("node"):
+            self.skipTest("node not installed")
+        here = os.path.dirname(os.path.abspath(__file__))
+        res = subprocess.run(["node", os.path.join(here, "frontend_smoke.js")],
+                             capture_output=True, text=True, timeout=120)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)

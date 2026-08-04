@@ -513,6 +513,23 @@ function resetPasswordFlow(email, devCode) {
 const logoImg = (size) =>
   `<img src="/static/logo-badge.png" width="${size}" height="${size}" alt="" class="brand-logo" aria-hidden="true">`;
 
+const OB_STEPS = [
+  { key: "health_goals", multi: true, q: "What are your goals right now?",
+    hint: "Pick as many as you like.", opts: [
+    ["fitness", "💪", "Get fitter"], ["stress", "🧘", "Manage stress"],
+    ["sleep", "😴", "Sleep better"], ["eat_better", "🥗", "Eat better"],
+    ["general", "✨", "General wellness"]] },
+  { key: "occupation", q: "What describes you best?", opts: [
+    ["student", "🎓", "Student"], ["professional", "💼", "Working professional"],
+    ["other", "🤝", "Other / prefer not to say"]] },
+  { key: "activity_level", q: "How active are you these days?", opts: [
+    ["active", "🏃", "Pretty active"], ["moderate", "🚶", "Somewhat active"],
+    ["inactive", "🛋️", "Not really active"]] },
+  { key: "gender", q: "How do you identify? (only used to pick better card content)", opts: [
+    ["female", "🙋‍♀️", "Female"], ["male", "🙋‍♂️", "Male"],
+    ["nonbinary", "🧑", "Non-binary"], ["prefer_not", "🤐", "Prefer not to say"]] },
+];
+
 views.onboarding = () => {
   $tabbar.classList.add("hidden");
   const answers = {};
