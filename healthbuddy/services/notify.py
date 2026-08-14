@@ -49,22 +49,11 @@ TEMPLATES = [
      "Breakfast: the one meeting you shouldn't skip. Go be a functional human and eat something.", 3),
     ("maggi_upgrade", "any", (19, 23), False, "🍜", "Chef's tip",
      "Maggi again? No shame — just throw an egg on it and call it a nutritional upgrade.", 1),
-    # --- weather-aware (real Open-Meteo data for users who shared location;
-    # silently absent for everyone else — see services/weather.py) ---
-    ("rain_chai", "rainy_weather", (16, 19), False, "☕", "Weather report",
-     "It's raining near you right now. Chai inside sounds like a perfect plan.", 4),
-    ("rain_alert", "rainy_weather", (7, 11), False, "🌦️", "Rain alert",
-     "The sky's started washing the city near you. Stay dry out there!", 3),
-    ("hot_hydrate", "hot_weather", (10, 20), False, "🥵", "It's a scorcher",
-     "It's genuinely hot near you right now — your body's losing water faster than usual. Log a glass?", 4),
-    ("clear_skies_walk", "good_walk_weather", (16, 19), False, "🚶", "Skies are clear",
-     "Good weather near you right now — a solid window for that walk you've been postponing.", 3),
-    ("rainy_indoor_move", "rainy_weather", (10, 19), False, "🧘", "Raining outside",
-     "Not great for a walk right now — a 5-minute stretch indoors works just as well.", 3),
-    ("cold_mindfulness", "cold_weather", (9, 20), False, "🌫️", "Bit of a gray day",
-     "Cooler weather near you can make everyone a little low-energy — a 2-minute breathing check-in might help.", 2),
-    ("high_uv_care", "high_uv", (10, 16), False, "🧴", "Sun's strong today",
-     "UV is high near you right now — sunscreen or shade if you're heading out.", 2),
+    # --- seasonal (rain-friendly; swap via weather API later) ---
+    ("rain_chai", "any", (16, 19), False, "☕", "Weather report",
+     "Rain outside. Chai inside. Sounds like a perfect plan.", 1),
+    ("rain_alert", "any", (7, 11), False, "🌦️", "Rain alert",
+     "The sky has started washing the city. Stay dry out there!", 1),
     # --- weekend ---
     ("weekend_morning", "any", (9, 12), True, "🥞", "No alarms today",
      "No alarms today, but the day's still yours. Maybe eat something before noon though.", 2),
@@ -120,20 +109,6 @@ def _context(user_id, now):
     if ctx["step_goal_hit"]:
         flags["inactive"] = False
         flags["steps_low"] = False
-
-    # --- weather flags (absent/False for users who never shared location,
-    # or if the weather API is briefly unreachable — see services/weather.py) ---
-    w = ctx.get("weather") or {}
-    if w.get("weather_ok"):
-        flags["hot_weather"] = bool(w.get("is_hot"))
-        flags["rainy_weather"] = bool(w.get("is_rainy"))
-        flags["cold_weather"] = bool(w.get("is_cold"))
-        flags["high_uv"] = bool(w.get("is_high_uv"))
-        # "good walk weather": not currently raining, not dangerously hot.
-        flags["good_walk_weather"] = not flags["rainy_weather"] and not flags["hot_weather"]
-    else:
-        flags["hot_weather"] = flags["rainy_weather"] = flags["cold_weather"] = False
-        flags["high_uv"] = flags["good_walk_weather"] = False
     flags["_fatigued"] = set(ctx.get("fatigued_categories") or [])
     flags["_notif_enabled"] = ctx["profile"]["notif_enabled"]
     return flags

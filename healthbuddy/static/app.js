@@ -150,20 +150,43 @@ function logout() {
    goes through pushStatus()/enablePush()/disablePush() and doesn't need to
    know which mechanism is actually running underneath. */
 
-/* Fixed daily nudge times for the native build - one per SLOTS window in
-   services/notify.py. Local notifications can't fetch personalized content
-   at fire-time (the device may be offline), so each carries a small rotating
-   line in the same voice as the server-composed ones, picked once when
-   notifications are enabled. IDs are fixed so they can be found & cancelled. */
-const LOCAL_SLOTS = [
-  { id: 101, hour: 8, minute: 30, title: "☀️ Rise and shine",
-    body: "Before the chai, before the scroll — one glass of water first." },
-  { id: 102, hour: 13, minute: 30, title: "🪑 Chair check",
-    body: "You've been one with your chair since morning. Time to remind your legs they still work." },
-  { id: 103, hour: 18, minute: 30, title: "🧘 Stretch o'clock",
-    body: "Pause for 60 seconds and stretch. Your spine has been quietly judging you all day." },
-  { id: 104, hour: 21, minute: 30, title: "🌙 Wind-down nudge",
-    body: "Screens off in 20 minutes? Just as an experiment — see how you feel tomorrow." },
+/* Daily nudge times for the native build. Local notifications can't fetch
+   personalized content at fire-time (the device may be offline), so the
+   time slots are fixed clock times decided here, and personalizedLocalSlots()
+   below fills in the wording once, when notifications are (re)enabled.
+
+   Up to LOCAL_SLOT_COUNT/day, evenly spaced from 7:30 AM to 9:30 PM — inside
+   the app's default quiet hours (23:00-07:00) so a full 12/day schedule still
+   never buzzes overnight. Matches the hard cap in
+   services/notification_preview.py (MAX_DAILY_NOTIFICATIONS) — the two are
+   meant to move together if that number ever changes. IDs are fixed so
+   status checks & cancellation are reliable even on a day that only
+   schedules, say, 8 of the 12 (a profile with little home-screen data yet
+   won't have enough distinct content to fill all 12 without repeating). */
+const LOCAL_SLOT_COUNT = 12;
+const LOCAL_SLOT_ID_BASE = 101;
+
+function buildLocalSlotTimes(n) {
+  const startMin = 7 * 60 + 30;  // 7:30 AM
+  const endMin = 21 * 60 + 30;   // 9:30 PM
+  const span = endMin - startMin;
+  const times = [];
+  for (let i = 0; i < n; i++) {
+    const mins = n === 1 ? startMin : Math.round(startMin + (span * i) / (n - 1));
+    times.push({ id: LOCAL_SLOT_ID_BASE + i, hour: Math.floor(mins / 60), minute: mins % 60 });
+  }
+  return times;
+}
+
+const LOCAL_SLOT_TIMES = buildLocalSlotTimes(LOCAL_SLOT_COUNT);
+
+/* Only used if the personalization call fails outright (offline first
+   install, server hiccup) — still better than scheduling nothing that day. */
+const GENERIC_FALLBACK = [
+  { title: "☀️ Rise and shine", body: "Before the chai, before the scroll — one glass of water first." },
+  { title: "🪑 Chair check", body: "You've been one with your chair since morning. Time to remind your legs they still work." },
+  { title: "🧘 Stretch o'clock", body: "Pause for 60 seconds and stretch. Your spine has been quietly judging you all day." },
+  { title: "🌙 Wind-down nudge", body: "Screens off in 20 minutes? Just as an experiment — see how you feel tomorrow." },
 ];
 
 function nativeLocalNotifAvailable() {
@@ -192,7 +215,7 @@ async function localNotifStatus() {
     if (perm.display === "denied") return "denied";
     if (perm.display !== "granted") return "undecided";
     const pending = await LN.getPending();
-    const ids = new Set(LOCAL_SLOTS.map((s) => s.id));
+    const ids = new Set(LOCAL_SLOT_TIMES.map((s) => s.id));
     const scheduled = pending.notifications.some((n) => ids.has(n.id));
     return scheduled ? "on" : "off";
   } catch (e) {
@@ -235,6 +258,127 @@ async function pushStatus() {
   return nativeLocalNotifAvailable() ? localNotifStatus() : webPushStatus();
 }
 
+/* Ask the server for up to LOCAL_SLOT_COUNT real personalized examples for
+   today (goal + occupation + gender/Period Care + steps/water/meals/sleep/
+   mood streak — see services/notification_preview.py) and lay them onto
+   that many of the fixed daily clock times. Falls back to a short generic
+   set if the request fails (offline, server hiccup) so *something* still
+   gets scheduled either way. */
+
+/* The engine can return more goal/occupation/home-data/period_care examples
+   than fit, or (for a brand-new low-data profile) fewer than
+   LOCAL_SLOT_COUNT. Either way, Period Care is pinned into the schedule
+   whenever present rather than left to compete on plain ordering — it's
+   the signal most worth guaranteeing visibility for. */
+function pickForSlots(examples, n) {
+  const pc = examples.find((e) => e.tag === "period_care");
+  const rest = examples.filter((e) => e.tag !== "period_care");
+  const picked = pc ? [...rest.slice(0, n - 1), pc] : rest.slice(0, n);
+  return picked.length ? picked : examples.slice(0, n);
+}
+
+async function personalizedLocalSlots() {
+  try {
+    const { examples } = await api("/onboarding/preview",
+      { method: "POST", body: { count: LOCAL_SLOT_COUNT } });
+    if (!examples || !examples.length) throw new Error("no examples returned");
+    const picked = pickForSlots(examples, LOCAL_SLOT_COUNT);
+    // Schedule exactly as many slots as we have distinct content for -
+    // never pad by repeating a line just to hit 12; a repeated notification
+    // reads as a bug, not as personalization.
+    return LOCAL_SLOT_TIMES.slice(0, picked.length).map((slot, i) => {
+      const ex = picked[i];
+      return { id: slot.id, hour: slot.hour, minute: slot.minute,
+               title: `${ex.emoji} ${ex.title}`, body: ex.body, tag: ex.tag };
+    });
+  } catch (e) {
+    console.error("[push] personalizedLocalSlots() failed, using generic wording:", e);
+    return LOCAL_SLOT_TIMES.slice(0, GENERIC_FALLBACK.length).map((slot, i) => ({
+      id: slot.id, hour: slot.hour, minute: slot.minute, tag: "generic_fallback", ...GENERIC_FALLBACK[i],
+    }));
+  }
+}
+
+/* Registered once (see initLocalNotifActionHandling(), called from boot())
+   so each scheduled notification can show "Done ✓" / "Remind in 1h" buttons
+   just like the web-push notifications already do in sw.js. Without this,
+   Android shows a plain notification with no buttons at all - registering
+   an actionTypeId is required, it's not automatic. */
+const LOCAL_ACTION_TYPE_ID = "hb_local_actions";
+
+function localSlotToScheduled(s) {
+  return {
+    id: s.id, title: s.title, body: s.body,
+    actionTypeId: LOCAL_ACTION_TYPE_ID,
+    // extra travels with the notification and comes back in the
+    // localNotificationActionPerformed event, so the listener knows what
+    // was tapped without having to look anything up.
+    extra: { tag: s.tag, title: s.title, firedAt: new Date(new Date().setHours(s.hour, s.minute, 0, 0)).toISOString() },
+    schedule: { on: { hour: s.hour, minute: s.minute }, allowWhileIdle: true },
+  };
+}
+
+/* Sends a tap / Done / Remind action to the server for the "does this
+   person actually follow through on notifications" data. Android only
+   fires this listener when the notification body or an action button is
+   tapped - a swipe-away or an ignored notification that just times out of
+   the tray produces NO event at all, on any Android app, not just this
+   one. So GET /api/notifications/local-stats can only ever report
+   responses; "ignored" has to be read as "no matching row", not as a
+   stored value. */
+async function logLocalNotifAction(notification, actionId) {
+  const extra = notification?.extra || {};
+  const action = actionId === LOCAL_ACTION_TYPE_ID || actionId === "tap" ? "tap"
+    : (actionId === "done" || actionId === "remind") ? actionId : "tap";
+  try {
+    await api("/notifications/local-event", {
+      method: "POST",
+      body: { notif_id: notification?.id, tag: extra.tag, title: extra.title,
+              action, fired_at: extra.firedAt },
+    });
+  } catch (e) {
+    console.error("[push] logLocalNotifAction() failed:", e);
+  }
+  return action;
+}
+
+function initLocalNotifActionHandling() {
+  const LN = window.__hbPlugin("LocalNotifications");
+  if (!LN) return;
+  LN.registerActionTypes({
+    types: [{
+      id: LOCAL_ACTION_TYPE_ID,
+      actions: [
+        { id: "remind", title: "Remind in 1h" },
+        { id: "done", title: "Done ✓" },
+      ],
+    }],
+  }).catch((e) => console.error("[push] registerActionTypes() failed:", e));
+
+  LN.addListener("localNotificationActionPerformed", async (event) => {
+    const notification = event.notification;
+    const action = await logLocalNotifAction(notification, event.actionId);
+    if (action === "done") {
+      toast("Nice — logged ✓");
+    } else if (action === "remind") {
+      // One-off reschedule 1h from now, offset into an unused ID range so
+      // it can't collide with (or get wiped by) the next day's regular
+      // LOCAL_SLOT_TIMES ids/cancel-all calls.
+      const remindAt = new Date(Date.now() + 60 * 60 * 1000);
+      try {
+        await LN.schedule({
+          notifications: [{
+            id: 9000 + (notification.id % 1000), title: notification.title, body: notification.body,
+            actionTypeId: LOCAL_ACTION_TYPE_ID, extra: notification.extra,
+            schedule: { at: remindAt, allowWhileIdle: true },
+          }],
+        });
+        toast("Okay — reminding you again in an hour.");
+      } catch (e) { console.error("[push] remind reschedule failed:", e); }
+    }
+  });
+}
+
 async function enableLocalNotifs() {
   const LN = window.__hbPlugin("LocalNotifications");
   if (!LN) { toast("Notifications plugin not available on this build."); return false; }
@@ -246,18 +390,32 @@ async function enableLocalNotifs() {
         : "No worries — you can turn this on later in Profile.");
       return false;
     }
-    await LN.schedule({
-      notifications: LOCAL_SLOTS.map((s) => ({
-        id: s.id, title: s.title, body: s.body,
-        schedule: { on: { hour: s.hour, minute: s.minute }, allowWhileIdle: true },
-      })),
-    });
-    toast("Notifications on 🔔 — daily nudges at set times, even with the app closed.");
+    // Clear the full fixed ID range first - if today's personalized batch
+    // is smaller than a previous day's (e.g. less home data logged so far),
+    // stale extra notifications from before must not linger.
+    await LN.cancel({ notifications: LOCAL_SLOT_TIMES.map((s) => ({ id: s.id })) });
+    const slots = await personalizedLocalSlots();
+    await LN.schedule({ notifications: slots.map(localSlotToScheduled) });
+    toast(`Notifications on 🔔 — ${slots.length} personalized nudges today, even with the app closed.`);
     return true;
   } catch (e) {
     toast("Couldn't turn on notifications: " + e.message);
     return false;
   }
+}
+
+/* Re-fetch and re-schedule with fresh personalized content. Call this after
+   onboarding changes (new goal picked, Period Care just enabled) or once a
+   day (e.g. from the home-screen pull-to-refresh) — otherwise the local
+   notifications keep the wording (and count) from whenever they were last
+   enabled, since they fire fully offline and can't reach the server at
+   fire-time. */
+async function refreshLocalNotifsIfEnabled() {
+  const LN = window.__hbPlugin("LocalNotifications");
+  if (!LN || (await localNotifStatus()) !== "on") return;
+  await LN.cancel({ notifications: LOCAL_SLOT_TIMES.map((s) => ({ id: s.id })) });
+  const slots = await personalizedLocalSlots();
+  await LN.schedule({ notifications: slots.map(localSlotToScheduled) });
 }
 
 /* Must be called from a direct user click - browsers silently ignore
@@ -299,7 +457,7 @@ async function enablePush() {
 async function disableLocalNotifs() {
   try {
     const LN = window.__hbPlugin("LocalNotifications");
-    await LN.cancel({ notifications: LOCAL_SLOTS.map((s) => ({ id: s.id })) });
+    await LN.cancel({ notifications: LOCAL_SLOT_TIMES.map((s) => ({ id: s.id })) });
     toast("Notifications turned off.");
   } catch (e) { toast(e.message); }
 }
@@ -320,63 +478,6 @@ async function disablePush() {
   return nativeLocalNotifAvailable() ? disableLocalNotifs() : disableWebPush();
 }
 
-/* ---------------- weather-aware nudges (location) ---------------- */
-
-const LOCATION_RESYNC_MS = 60 * 60 * 1000; // re-send at most once an hour
-let _lastLocationSyncAt = 0;
-
-async function sendLocationToServer(lat, lon) {
-  _lastLocationSyncAt = Date.now();
-  try {
-    await api("/location", { method: "POST", body: { lat, lon } });
-  } catch (e) {
-    console.error("[location] failed to sync:", e);
-  }
-}
-
-/* Works both as a plain PWA (standard Web Geolocation API) and inside the
-   Capacitor-wrapped Android app (native plugin, more reliable there). Safe
-   to call anytime - a denial or timeout just means weather nudges won't
-   fire for this person; nothing else is affected. */
-async function requestLocationPermission() {
-  try {
-    const Geo = window.__hbPlugin && window.__hbPlugin("Geolocation");
-    if (Geo) {
-      const pos = await Geo.getCurrentPosition();
-      await sendLocationToServer(pos.coords.latitude, pos.coords.longitude);
-      return true;
-    }
-    if (!navigator.geolocation) return false;
-    return await new Promise((resolve) => {
-      navigator.geolocation.getCurrentPosition(
-        async (pos) => {
-          await sendLocationToServer(pos.coords.latitude, pos.coords.longitude);
-          resolve(true);
-        },
-        (err) => {
-          console.log("[location] not granted:", err.message);
-          resolve(false);
-        },
-        { enableHighAccuracy: false, timeout: 8000, maximumAge: 600000 }
-      );
-    });
-  } catch (e) {
-    console.log("[location] error:", e);
-    return false;
-  }
-}
-
-/* Call once per app load (after login) - if permission was already
-   granted, this resyncs silently with no new prompt. */
-function maybeResyncLocation() {
-  if (Date.now() - _lastLocationSyncAt < LOCATION_RESYNC_MS) return;
-  if (navigator.permissions?.query) {
-    navigator.permissions.query({ name: "geolocation" })
-      .then((status) => { if (status.state === "granted") requestLocationPermission(); })
-      .catch(() => {});
-  }
-}
-
 /* Shown after onboarding AND after every login, on any device, until the
    person has actually decided (not just dismissed once elsewhere) - so a
    new device/browser always gets a real chance to ask, not just day one. */
@@ -391,7 +492,6 @@ async function maybePromptForPush() {
     <button class="btn btn-ghost btn-block" data-close>Maybe later</button>`);
   document.getElementById("push-yes").onclick = async (e) => {
     await enablePush();
-    await requestLocationPermission();
     e.target.closest(".modal-backdrop")?.remove();
   };
 }
@@ -445,7 +545,7 @@ function authForm(mode) {
       }
       saveSession(data);
       go(data.user.onboarded ? "home" : "onboarding");
-      if (data.user.onboarded) { await maybePromptForPush(); maybeResyncLocation(); }
+      if (data.user.onboarded) await maybePromptForPush();
     } catch (e) { err.textContent = e.message; }
   };
   document.getElementById("f-forgot")?.addEventListener("click", () => forgotPasswordFlow());
@@ -1213,6 +1313,7 @@ document.addEventListener("click", (e) => {
 window.addEventListener("hashchange", route);
 
 (async function boot() {
+  if (nativeLocalNotifAvailable()) initLocalNotifActionHandling();
   if (!state.token && state.refreshToken) await silentRefresh();
   if (state.token) {
     try {

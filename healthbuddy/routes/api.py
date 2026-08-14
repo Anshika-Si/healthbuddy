@@ -11,7 +11,7 @@ from ..auth import (device_label_from_request, hash_password, issue_refresh_toke
 from ..config import CATEGORIES, CATEGORY_META
 from ..db import execute, query
 from ..services import (bandit, gamification, notify, notification_preview, nudges, push,
-                        scheduler, segmentation, social, weather)
+                        scheduler, segmentation, social)
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
@@ -258,18 +258,35 @@ def onboarding():
 @api.post("/onboarding/preview")
 @require_auth
 def onboarding_preview():
-    """'Here's what your notifications will look like' — shown on the last
-    onboarding screen, built from the answers the user just picked (not yet
-    saved) plus whatever real home-screen data already exists for them today.
-    Doesn't require onboarded=1, unlike /nudges/next."""
+    """'Here's what your notifications will look like.' Two callers:
+      1. The last onboarding screen, BEFORE the user's answers are saved —
+         pass gender/occupation/health_goals/period_care_enabled in the body.
+      2. Profile's 'Enable notifications' toggle, for an ALREADY-onboarded
+         user — call with an empty body; everything below falls back to
+         their saved profile + today's real home-screen data automatically,
+         which is exactly what the native build schedules on-device
+         (see enableLocalNotifs() in app.js)."""
     data = body()
-    occupation, gender = data.get("occupation"), data.get("gender")
+    # NOTE: relative to routes/api.py, the services package is ../services,
+    # not . (routes has no context/cycle modules of its own).
+    from ..services import context as context_svc
+    ctx = context_svc.build(g.user["id"])
+
+    occupation = data.get("occupation") or (ctx["profile"]["occupation"] if ctx else None)
+    gender = data.get("gender") or (ctx["profile"]["gender"] if ctx else None)
     goals = data.get("health_goals") or ([data.get("health_goal")] if data.get("health_goal") else [])
     goals = [str(x).strip() for x in goals if x]
-    period_care_enabled = bool(data.get("period_care_enabled")) and gender == "female"
+    if not goals and ctx:
+        goals = ctx["profile"]["health_goals"]
 
-    from . import context as context_svc  # local import avoids a cycle at module load
-    ctx = context_svc.build(g.user["id"])
+    period_care_raw = data.get("period_care_enabled")
+    # ctx["cycle"] is only ever non-None when the user has actually opted
+    # into Period Care (services/cycle.py 404s/returns None otherwise), so
+    # it's a safe fallback signal when the client doesn't pass the flag.
+    period_care_enabled = (bool(period_care_raw) if period_care_raw is not None
+                            else bool(ctx and ctx["cycle"]))
+    period_care_enabled = period_care_enabled and gender == "female"
+
     stats = {}
     if ctx:
         stats = {
@@ -280,19 +297,14 @@ def onboarding_preview():
             "meal_logs_today": ctx["today"]["meals"],
             "sleep_hours_last_night": ctx["today"]["sleep_hours"],
             "mood_streak_days": gamification.streak(g.user["id"], "mood"),
-            "activity_level": data.get("activity_level"),
+            "activity_level": data.get("activity_level") or ctx["profile"]["activity_level"],
         }
-    cycle_phase = None
-    if period_care_enabled:
-        try:
-            from . import cycle as cycle_svc
-            cycle_phase = cycle_svc.status(g.user["id"]).get("phase")
-        except LookupError:
-            pass
+    cycle_phase = (ctx["cycle"].get("phase") if (period_care_enabled and ctx and ctx["cycle"]) else None)
 
     result = notification_preview.preview(
         gender=gender, occupation=occupation, goals=goals, stats=stats,
         period_care_enabled=period_care_enabled, cycle_phase=cycle_phase,
+        count=data.get("count", notification_preview.DEFAULT_DAILY_NOTIFICATIONS),
     )
     return jsonify(result)
 
@@ -442,37 +454,6 @@ def preferences():
     return jsonify(ok=True, user=_public_user(g.user["id"]))
 
 
-# ---------- Location / weather ----------
-
-@api.post("/location")
-@require_auth
-def update_location():
-    """Frontend calls this once the browser/device grants location
-    permission (see maybePromptForPush()/requestLocationPermission() in
-    app.js), and again periodically to keep weather-aware nudges fresh."""
-    data = body()
-    lat, lon = data.get("lat"), data.get("lon")
-    if lat is None or lon is None:
-        return jsonify(error="lat and lon are required."), 400
-    try:
-        lat, lon = float(lat), float(lon)
-    except (TypeError, ValueError):
-        return jsonify(error="lat/lon must be numbers."), 400
-    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-        return jsonify(error="lat/lon out of range."), 400
-    weather.save_location(g.user["id"], lat, lon)
-    return jsonify(ok=True)
-
-
-@api.get("/location/weather")
-@require_auth
-def current_weather():
-    """Diagnostic: what the server currently thinks the weather is for this
-    user, based on their last saved location. Handy for confirming the
-    location→weather pipeline is working end to end."""
-    return jsonify(**weather.get_user_weather_context(g.user["id"]))
-
-
 # ---------- Social ----------
 
 @api.get("/challenges")
@@ -609,3 +590,64 @@ def push_run_tick():
         return jsonify(error="Invalid token."), 403
     result = scheduler.run_tick_once()
     return jsonify(result)
+
+
+@api.post("/notifications/local-event")
+@require_auth
+def local_notification_event():
+    """Logs a tap / 'Done' / 'Remind in 1h' on one of the native on-device
+    notifications (see localNotificationActionPerformed listener in
+    app.js). Unlike /push/ack and /push/snooze, this runs from inside the
+    app's own JS context (not an isolated service worker), so it's
+    authenticated with the normal session token instead of the HMAC sig
+    scheme those two use."""
+    data = body()
+    action = data.get("action")
+    if action not in ("tap", "done", "remind"):
+        return jsonify(error="action must be one of: tap, done, remind"), 400
+    execute("""INSERT INTO local_notification_events
+               (user_id, notif_id, tag, title, action, fired_at)
+               VALUES (?,?,?,?,?,?)""",
+            (g.user["id"], data.get("notif_id"), data.get("tag"), data.get("title"),
+             action, data.get("fired_at")))
+    if action == "done":
+        # Mirrors /push/ack's small reward for responding directly from the
+        # notification without opening the app.
+        execute("INSERT INTO xp_events (user_id, amount, reason) VALUES (?,?,?)",
+                (g.user["id"], 5, f"local_notif_done:{data.get('tag') or 'unknown'}"))
+    return jsonify(ok=True)
+
+
+@api.get("/notifications/local-stats")
+@require_auth
+def local_notification_stats():
+    """How much this user actually follows through on their on-device
+    notifications. Only counts what Android can actually tell us about
+    (taps and action-button presses) - a notification that was silently
+    swiped away or left to expire in the tray produces no event on Android,
+    so there's no reliable 'ignored' count here, only 'responded'. `since`
+    query param (days, default 30) controls the lookback window."""
+    try:
+        days = max(1, min(int(request.args.get("since", 30)), 365))
+    except (TypeError, ValueError):
+        days = 30
+
+    rows = query("""SELECT action, COUNT(*) AS n FROM local_notification_events
+                     WHERE user_id=? AND created_at >= datetime('now', ?)
+                     GROUP BY action""",
+                  (g.user["id"], f"-{days} days"))
+    by_action = {r["action"]: r["n"] for r in rows}
+
+    tag_rows = query("""SELECT tag, action, COUNT(*) AS n FROM local_notification_events
+                         WHERE user_id=? AND created_at >= datetime('now', ?)
+                         GROUP BY tag, action""",
+                      (g.user["id"], f"-{days} days"))
+    by_tag = {}
+    for r in tag_rows:
+        by_tag.setdefault(r["tag"] or "unknown", {})[r["action"]] = r["n"]
+
+    total_responses = sum(by_action.values())
+    done_rate = round(by_action.get("done", 0) / total_responses, 2) if total_responses else None
+
+    return jsonify(since_days=days, by_action=by_action, by_tag=by_tag,
+                    total_responses=total_responses, done_rate_of_responses=done_rate)

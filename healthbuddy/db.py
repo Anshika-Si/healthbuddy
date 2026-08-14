@@ -191,6 +191,25 @@ CREATE TABLE IF NOT EXISTS push_snoozes (
     remind_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_push_snoozes_user ON push_snoozes(user_id, remind_at);
+-- On-device (Capacitor LocalNotifications) equivalent of interaction_logs.
+-- Those local notifications aren't tied to a notification_cards row (they're
+-- built on the fly by services/notification_preview.py), so this is a
+-- separate lightweight table rather than a card_id FK. Android only tells
+-- the app when a notification is TAPPED or one of its action buttons is
+-- pressed - a plain swipe-away or ignore produces no event at all, so
+-- "ignored" has to be inferred from absence of a row, not read from a
+-- stored value here. See GET /api/notifications/local-stats.
+CREATE TABLE IF NOT EXISTS local_notification_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    notif_id INTEGER,                 -- the LocalNotifications numeric id (101-112) that fired
+    tag TEXT,                         -- e.g. goal:fitness, occupation:student, home_data, period_care, wellness
+    title TEXT,
+    action TEXT NOT NULL,             -- tap | done | remind
+    fired_at TEXT,                    -- device-local timestamp the notification was scheduled for (client-supplied)
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_local_notif_events_user ON local_notification_events(user_id, created_at);
 CREATE TABLE IF NOT EXISTS pending_signups (
     email TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -226,12 +245,6 @@ CREATE TABLE IF NOT EXISTS game_scores (
     is_daily INTEGER NOT NULL DEFAULT 0,
     played_on TEXT NOT NULL DEFAULT (date('now')),
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE TABLE IF NOT EXISTS user_location (
-    user_id INTEGER PRIMARY KEY REFERENCES users(id),
-    lat REAL NOT NULL,
-    lon REAL NOT NULL,
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 """
 
