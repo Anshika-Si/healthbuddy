@@ -227,6 +227,12 @@ CREATE TABLE IF NOT EXISTS game_scores (
     played_on TEXT NOT NULL DEFAULT (date('now')),
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS user_location (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+    lat REAL NOT NULL,
+    lon REAL NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 

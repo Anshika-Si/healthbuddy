@@ -10,7 +10,8 @@ from ..auth import (device_label_from_request, hash_password, issue_refresh_toke
                     rotate_refresh_token, verify_password, verify_refresh_token)
 from ..config import CATEGORIES, CATEGORY_META
 from ..db import execute, query
-from ..services import bandit, gamification, notify, nudges, push, scheduler, segmentation, social
+from ..services import (bandit, gamification, notify, notification_preview, nudges, push,
+                        scheduler, segmentation, social, weather)
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
@@ -254,6 +255,48 @@ def onboarding():
     return jsonify(weights=weights, xp_earned=xp, user=_public_user(g.user["id"]))
 
 
+@api.post("/onboarding/preview")
+@require_auth
+def onboarding_preview():
+    """'Here's what your notifications will look like' — shown on the last
+    onboarding screen, built from the answers the user just picked (not yet
+    saved) plus whatever real home-screen data already exists for them today.
+    Doesn't require onboarded=1, unlike /nudges/next."""
+    data = body()
+    occupation, gender = data.get("occupation"), data.get("gender")
+    goals = data.get("health_goals") or ([data.get("health_goal")] if data.get("health_goal") else [])
+    goals = [str(x).strip() for x in goals if x]
+    period_care_enabled = bool(data.get("period_care_enabled")) and gender == "female"
+
+    from . import context as context_svc  # local import avoids a cycle at module load
+    ctx = context_svc.build(g.user["id"])
+    stats = {}
+    if ctx:
+        stats = {
+            "daily_steps": ctx["steps"],
+            "step_goal": ctx["profile"]["step_goal"],
+            "screen_time_hours": (ctx["screen_minutes"] / 60) if ctx["screen_minutes"] is not None else None,
+            "water_logs_today": ctx["today"]["water_glasses"],
+            "meal_logs_today": ctx["today"]["meals"],
+            "sleep_hours_last_night": ctx["today"]["sleep_hours"],
+            "mood_streak_days": gamification.streak(g.user["id"], "mood"),
+            "activity_level": data.get("activity_level"),
+        }
+    cycle_phase = None
+    if period_care_enabled:
+        try:
+            from . import cycle as cycle_svc
+            cycle_phase = cycle_svc.status(g.user["id"]).get("phase")
+        except LookupError:
+            pass
+
+    result = notification_preview.preview(
+        gender=gender, occupation=occupation, goals=goals, stats=stats,
+        period_care_enabled=period_care_enabled, cycle_phase=cycle_phase,
+    )
+    return jsonify(result)
+
+
 # ---------- Nudges ----------
 
 @api.get("/nudges/next")
@@ -397,6 +440,37 @@ def preferences():
     if updates:
         execute(f"UPDATE users SET {', '.join(updates)} WHERE id=?", (*args, g.user["id"]))
     return jsonify(ok=True, user=_public_user(g.user["id"]))
+
+
+# ---------- Location / weather ----------
+
+@api.post("/location")
+@require_auth
+def update_location():
+    """Frontend calls this once the browser/device grants location
+    permission (see maybePromptForPush()/requestLocationPermission() in
+    app.js), and again periodically to keep weather-aware nudges fresh."""
+    data = body()
+    lat, lon = data.get("lat"), data.get("lon")
+    if lat is None or lon is None:
+        return jsonify(error="lat and lon are required."), 400
+    try:
+        lat, lon = float(lat), float(lon)
+    except (TypeError, ValueError):
+        return jsonify(error="lat/lon must be numbers."), 400
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return jsonify(error="lat/lon out of range."), 400
+    weather.save_location(g.user["id"], lat, lon)
+    return jsonify(ok=True)
+
+
+@api.get("/location/weather")
+@require_auth
+def current_weather():
+    """Diagnostic: what the server currently thinks the weather is for this
+    user, based on their last saved location. Handy for confirming the
+    location→weather pipeline is working end to end."""
+    return jsonify(**weather.get_user_weather_context(g.user["id"]))
 
 
 # ---------- Social ----------

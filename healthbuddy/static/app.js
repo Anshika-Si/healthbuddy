@@ -320,6 +320,63 @@ async function disablePush() {
   return nativeLocalNotifAvailable() ? disableLocalNotifs() : disableWebPush();
 }
 
+/* ---------------- weather-aware nudges (location) ---------------- */
+
+const LOCATION_RESYNC_MS = 60 * 60 * 1000; // re-send at most once an hour
+let _lastLocationSyncAt = 0;
+
+async function sendLocationToServer(lat, lon) {
+  _lastLocationSyncAt = Date.now();
+  try {
+    await api("/location", { method: "POST", body: { lat, lon } });
+  } catch (e) {
+    console.error("[location] failed to sync:", e);
+  }
+}
+
+/* Works both as a plain PWA (standard Web Geolocation API) and inside the
+   Capacitor-wrapped Android app (native plugin, more reliable there). Safe
+   to call anytime - a denial or timeout just means weather nudges won't
+   fire for this person; nothing else is affected. */
+async function requestLocationPermission() {
+  try {
+    const Geo = window.__hbPlugin && window.__hbPlugin("Geolocation");
+    if (Geo) {
+      const pos = await Geo.getCurrentPosition();
+      await sendLocationToServer(pos.coords.latitude, pos.coords.longitude);
+      return true;
+    }
+    if (!navigator.geolocation) return false;
+    return await new Promise((resolve) => {
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          await sendLocationToServer(pos.coords.latitude, pos.coords.longitude);
+          resolve(true);
+        },
+        (err) => {
+          console.log("[location] not granted:", err.message);
+          resolve(false);
+        },
+        { enableHighAccuracy: false, timeout: 8000, maximumAge: 600000 }
+      );
+    });
+  } catch (e) {
+    console.log("[location] error:", e);
+    return false;
+  }
+}
+
+/* Call once per app load (after login) - if permission was already
+   granted, this resyncs silently with no new prompt. */
+function maybeResyncLocation() {
+  if (Date.now() - _lastLocationSyncAt < LOCATION_RESYNC_MS) return;
+  if (navigator.permissions?.query) {
+    navigator.permissions.query({ name: "geolocation" })
+      .then((status) => { if (status.state === "granted") requestLocationPermission(); })
+      .catch(() => {});
+  }
+}
+
 /* Shown after onboarding AND after every login, on any device, until the
    person has actually decided (not just dismissed once elsewhere) - so a
    new device/browser always gets a real chance to ask, not just day one. */
@@ -334,6 +391,7 @@ async function maybePromptForPush() {
     <button class="btn btn-ghost btn-block" data-close>Maybe later</button>`);
   document.getElementById("push-yes").onclick = async (e) => {
     await enablePush();
+    await requestLocationPermission();
     e.target.closest(".modal-backdrop")?.remove();
   };
 }
@@ -387,7 +445,7 @@ function authForm(mode) {
       }
       saveSession(data);
       go(data.user.onboarded ? "home" : "onboarding");
-      if (data.user.onboarded) await maybePromptForPush();
+      if (data.user.onboarded) { await maybePromptForPush(); maybeResyncLocation(); }
     } catch (e) { err.textContent = e.message; }
   };
   document.getElementById("f-forgot")?.addEventListener("click", () => forgotPasswordFlow());

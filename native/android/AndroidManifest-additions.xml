@@ -8,5 +8,9 @@
      actually show a notification — without this, the in-app "Enable"
      toggle can succeed while the OS silently drops every notification. -->
 <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+<!-- For weather-aware nudges (@capacitor/geolocation) — coarse is enough
+     for weather, but Android requires declaring both together. -->
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 <!-- and make sure the <manifest> tag itself contains:
      xmlns:tools="http://schemas.android.com/tools"                        -->

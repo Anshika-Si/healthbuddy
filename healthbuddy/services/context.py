@@ -12,6 +12,7 @@ fake value — consumers must handle absence gracefully.
 from datetime import date, datetime
 from ..db import query
 from . import cycle as cycle_svc
+from . import weather as weather_svc
 
 
 def build(user_id, now=None):
@@ -93,5 +94,10 @@ def build(user_id, now=None):
         ctx["cycle"] = cycle_svc.status(user_id)
     except LookupError:
         pass
+
+    # --- weather (only if the user has ever shared a location; absent
+    # otherwise, and never blocks/breaks context if the weather API is
+    # down — see services/weather.py) ---
+    ctx["weather"] = weather_svc.get_user_weather_context(user_id)
 
     return ctx
