@@ -14,13 +14,20 @@
 <body>
 <div id="app" class="app-shell">
   <main id="screen" class="screen" tabindex="-1"><!-- views render here --></main>
-  <nav id="tabbar" class="tabbar hidden" aria-label="Main navigation">
-    <button class="tab" data-route="home"  aria-label="Home"><span class="tab-ico">🏠</span><span>Home</span></button>
-    <button class="tab" data-route="nudges" aria-label="Nudges"><span class="tab-ico">✨</span><span>Nudges</span></button>
-    <button class="tab" data-route="explore" aria-label="Explore"><span class="tab-ico">📚</span><span>Explore</span></button>
-    <button class="tab" data-route="play" aria-label="Play"><span class="tab-ico">🎮</span><span>Play</span></button>
-    <button class="tab" data-route="challenges" aria-label="Challenges"><span class="tab-ico">🏆</span><span>Challenges</span></button>
-    <button class="tab" data-route="profile" aria-label="Profile"><span class="tab-ico">🙂</span><span>Profile</span></button>
+  <button id="menu-btn" class="menu-btn hidden" aria-label="Open menu"
+          aria-controls="tabbar" aria-expanded="false">☰</button>
+  <div id="nav-scrim" class="nav-scrim hidden" hidden></div>
+  <nav id="tabbar" class="sidenav hidden" aria-label="Main navigation" aria-hidden="true">
+    <div class="sidenav-head">
+      <img src="/static/logo-badge.png" width="40" height="40" alt="" aria-hidden="true">
+      <div><strong>HealthBuddy</strong><p class="muted small" id="nav-user"></p></div>
+      <button id="nav-close" class="nav-close" aria-label="Close menu">✕</button>
+    </div>
+    <button class="tab" data-route="home"><span class="tab-ico">🏠</span><span>Home</span></button>
+    <button class="tab" data-route="nudges"><span class="tab-ico">✨</span><span>Nudges</span></button>
+    <button class="tab" data-route="play"><span class="tab-ico">🎮</span><span>Play</span></button>
+    <button class="tab" data-route="challenges"><span class="tab-ico">🏆</span><span>Challenges</span></button>
+    <button class="tab" data-route="profile"><span class="tab-ico">🙂</span><span>Profile</span></button>
   </nav>
   <div id="toast-zone" class="toast-zone" aria-live="polite"></div>
   <div id="modal-zone"></div>

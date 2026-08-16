@@ -43,7 +43,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 /* ---------- shell ---------- */
 .app-shell { max-width: 480px; margin: 0 auto; min-height: 100dvh;
   display: flex; flex-direction: column; position: relative; }
-.screen { flex: 1; padding: var(--sp-4) var(--sp-3) 96px; outline: none; }
+.screen { flex: 1; padding: calc(var(--sp-4) + 46px) var(--sp-3) 40px; outline: none; }
 .hidden { display: none !important; }
 
 h1, h2, h3 { font-family: var(--font-display); font-weight: 600; line-height: 1.2; }
@@ -158,18 +158,35 @@ h1 { font-size: 30px; } h2 { font-size: 22px; } h3 { font-size: 18px; }
 .affinity-row { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
 .affinity-row .bar { flex: 1; margin: 0; }
 
-/* ---------- tab bar ---------- */
-.tabbar { position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
-  width: 100%; max-width: 480px; display: flex; background: var(--surface);
-  border-top: 1px solid var(--line); padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); }
-.tab { flex: 1; min-height: 52px; background: none; border: none; border-radius: var(--r-sm);
-  display: flex; flex-direction: column; align-items: center; gap: 2px;
-  font-size: 11px; font-weight: 800; color: var(--muted); }
+/* ---------- side menu (replaces the old bottom tab bar) ---------- */
+.menu-btn { position: fixed; top: calc(10px + env(safe-area-inset-top)); left: 12px; z-index: 40;
+  width: 46px; height: 46px; border-radius: 14px; border: 1.5px solid var(--line);
+  background: var(--surface); color: var(--text); font-size: 20px; line-height: 1;
+  box-shadow: var(--shadow); }
+.nav-scrim { position: fixed; inset: 0; background: rgba(10,6,16,.55); z-index: 45;
+  animation: fadeIn .18s ease; }
+@keyframes fadeIn { from { opacity: 0 } }
+.sidenav { position: fixed; top: 0; bottom: 0; left: 0; z-index: 50;
+  width: 250px; max-width: 82vw; background: var(--surface);
+  border-right: 1px solid var(--line); padding: calc(14px + env(safe-area-inset-top)) 12px 20px;
+  display: flex; flex-direction: column; gap: 6px;
+  transform: translateX(-102%); transition: transform .24s cubic-bezier(.3,1,.4,1);
+  box-shadow: 6px 0 26px rgba(0,0,0,.28); }
+.sidenav.is-open { transform: translateX(0); }
+.sidenav-head { display: flex; align-items: center; gap: 10px; padding: 4px 6px 14px;
+  border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+.sidenav-head p { margin: 0; }
+.nav-close { margin-left: auto; background: none; border: none; color: var(--muted); font-size: 18px; }
+.tab { display: flex; align-items: center; gap: 12px; width: 100%;
+  min-height: 50px; padding: 0 14px; border: none; border-radius: var(--r-sm);
+  background: none; color: var(--muted); font: 700 15px var(--font-body); text-align: left; }
 .tab .tab-ico { font-size: 20px; }
 .tab.active { color: var(--text); background: var(--surface-2); }
+.tab:hover { background: var(--surface-2); }
+@media (prefers-reduced-motion: reduce) { .sidenav { transition: none; } }
 
 /* ---------- toasts & modal ---------- */
-.toast-zone { position: fixed; bottom: 84px; left: 50%; transform: translateX(-50%);
+.toast-zone { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
   display: flex; flex-direction: column; gap: 8px; z-index: 50; width: min(92vw, 440px); }
 .toast { background: var(--surface-2); border: 1.5px solid var(--line); border-radius: var(--r-md);
   padding: 12px 16px; font-weight: 700; box-shadow: var(--shadow); animation: rise .3s ease; }
@@ -422,3 +439,54 @@ details.fold > .card { margin-top: 0; border-top-left-radius: 0; border-top-righ
 .theme-seg button { border: none; background: none; color: var(--muted); padding: 8px 14px;
   border-radius: 99px; font: 700 13px var(--font-body); }
 .theme-seg button[aria-pressed="true"] { background: var(--brand-grad); color: #fff; }
+
+/* ================= BREATHING ROOM =================
+   Cards were butting into each other and the Wrapped/theme rows felt
+   cramped. One consistent rhythm: 14px between stacked blocks, roomier
+   card padding, and clear separation for the home cards. */
+.card + .card,
+.card + .fold,
+.fold + .fold,
+.fold + .card,
+.check-row + .check-row { margin-top: 14px; }
+.card { padding: 16px; }
+.screen h2 { margin-bottom: 10px; }
+.section-gap { margin-top: 24px; }
+
+/* home: plan / steps / screen-time cards */
+.plan-card { gap: 10px; padding: 18px 16px; }
+.plan-stage { margin-top: 12px; }
+.steps-card { gap: 12px; padding: 18px 16px; margin-top: 14px; }
+.steps-n { line-height: 1.15; }
+.plan-dots { margin: 10px 0 14px; }
+.checklist { display: grid; gap: 12px; }
+.check-row { padding: 14px; }
+
+/* theme + wrapped rows */
+.theme-row { gap: 14px; padding: 18px 16px; flex-wrap: wrap; }
+.theme-seg { gap: 6px; padding: 5px; }
+.theme-seg button { padding: 10px 16px; }
+.wrapped-row { gap: 14px; padding: 18px 16px; }
+.wrapped-row .btn { flex-shrink: 0; }
+
+/* wrapped story cards */
+.wrap-card { padding: 30px 24px; gap: 14px; }
+.wrap-stage { margin-top: 20px; }
+.wrap-nav { margin-top: 14px; }
+.wl { gap: 14px; }
+
+/* leaderboard */
+.seg { display: flex; gap: 6px; background: var(--surface-2); padding: 5px; border-radius: 99px; }
+.seg button { flex: 1; border: none; background: none; color: var(--muted);
+  padding: 10px 12px; border-radius: 99px; font: 700 13px var(--font-body); }
+.seg button[aria-pressed="true"] { background: var(--brand-grad); color: #fff; }
+.lb-row { padding: 12px 4px; gap: 12px; }
+.lb-row:last-of-type { border-bottom: none; }
+.lb-stats { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.lb-row.is-you { background: var(--surface-2); border-radius: var(--r-sm); padding-left: 8px; padding-right: 8px; }
+
+/* profile blocks */
+.me-card { padding: 18px 16px; }
+.me-chips { gap: 8px; margin: 12px 0 8px; }
+.fold > summary { padding: 14px 16px; }
+.perm-row { padding: 14px 0; gap: 12px; }

@@ -83,3 +83,74 @@ def unlink_buddy(user_id, buddy_id):
     """Remove the link both ways. Quiet and drama-free."""
     execute("DELETE FROM buddies WHERE user_id=? AND buddy_id=?", (user_id, buddy_id))
     execute("DELETE FROM buddies WHERE user_id=? AND buddy_id=?", (buddy_id, user_id))
+
+
+def xp_leaderboard(user_id, scope="buddies", limit=50):
+    """Competitive ranking by XP.
+
+    scope="buddies" → you + the people you've linked with.
+    scope="global"  → everyone on HealthBuddy (top `limit`), plus your own row
+                      appended if you fall outside the top slice, so you can
+                      always see where you stand.
+
+    Only public progress is exposed — name, avatar, XP, level, badge count and
+    longest streak. Never habit logs, steps, screen time or cycle data.
+    A single efficient query per scope; XP is summed in SQL rather than
+    per-user so this stays fast as the user base grows.
+    """
+    from . import gamification
+    scope = "global" if scope == "global" else "buddies"
+
+    if scope == "buddies":
+        ids = [user_id] + [r["buddy_id"] for r in
+                           query("SELECT buddy_id FROM buddies WHERE user_id=?", (user_id,))]
+        placeholders = ",".join("?" * len(ids))
+        rows = query(f"""SELECT u.id, u.name, u.avatar,
+                                COALESCE(SUM(x.amount), 0) AS xp
+                         FROM users u LEFT JOIN xp_events x ON x.user_id = u.id
+                         WHERE u.id IN ({placeholders})
+                         GROUP BY u.id, u.name, u.avatar
+                         ORDER BY xp DESC, u.name""", tuple(ids))
+    else:
+        rows = query("""SELECT u.id, u.name, u.avatar,
+                               COALESCE(SUM(x.amount), 0) AS xp
+                        FROM users u LEFT JOIN xp_events x ON x.user_id = u.id
+                        WHERE u.onboarded = 1
+                        GROUP BY u.id, u.name, u.avatar
+                        ORDER BY xp DESC, u.name
+                        LIMIT ?""", (limit,))
+
+    out = []
+    for i, r in enumerate(rows, 1):
+        badges = query("SELECT COUNT(*) AS n FROM user_badges WHERE user_id=?",
+                       (r["id"],), one=True)["n"]
+        streaks = gamification.all_streaks(r["id"])
+        out.append({"rank": i, "user_id": r["id"], "name": r["name"],
+                    "avatar": r["avatar"] or "🙂", "xp": int(r["xp"]),
+                    "level": gamification.level_for(int(r["xp"])), "badges": badges,
+                    "best_streak": max(streaks.values()) if streaks else 0,
+                    "is_you": r["id"] == user_id})
+
+    you = next((r for r in out if r["is_you"]), None)
+    if scope == "global" and you is None:
+        # outside the top slice — work out the true rank and append the row
+        my_xp = gamification.total_xp(user_id)
+        ahead = query("""SELECT COUNT(*) AS n FROM (
+                             SELECT u.id, COALESCE(SUM(x.amount), 0) AS xp
+                             FROM users u LEFT JOIN xp_events x ON x.user_id = u.id
+                             WHERE u.onboarded = 1
+                             GROUP BY u.id HAVING COALESCE(SUM(x.amount), 0) > ?
+                         ) t""", (my_xp,), one=True)["n"]
+        me = query("SELECT id, name, avatar FROM users WHERE id=?", (user_id,), one=True)
+        streaks = gamification.all_streaks(user_id)
+        you = {"rank": ahead + 1, "user_id": user_id, "name": me["name"],
+               "avatar": me["avatar"] or "🙂", "xp": my_xp,
+               "level": gamification.level_for(my_xp),
+               "badges": query("SELECT COUNT(*) AS n FROM user_badges WHERE user_id=?",
+                               (user_id,), one=True)["n"],
+               "best_streak": max(streaks.values()) if streaks else 0,
+               "is_you": True, "outside_top": True}
+
+    return {"scope": scope, "rows": out, "you": you,
+            "total_players": query("SELECT COUNT(*) AS n FROM users WHERE onboarded=1",
+                                   one=True)["n"] if scope == "global" else len(out)}

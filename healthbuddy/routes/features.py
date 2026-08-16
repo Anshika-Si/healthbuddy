@@ -350,3 +350,13 @@ def undo_log(habit_type):
 @require_auth
 def notifications():
     return jsonify(notifications=notify.compose(g.user["id"]))
+
+
+# ---------------- Leaderboard ----------------
+@bp.get("/leaderboard")
+@require_auth
+def xp_leaderboard():
+    """?scope=buddies (default) or ?scope=global."""
+    from ..services import social
+    return jsonify(**social.xp_leaderboard(g.user["id"],
+                                           scope=request.args.get("scope", "buddies")))

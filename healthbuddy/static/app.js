@@ -501,7 +501,7 @@ async function maybePromptForPush() {
 const views = {};
 
 views.welcome = () => {
-  $tabbar.classList.add("hidden");
+  hideTabs();
   render(`
     <div class="welcome">
       <div class="logo">${logoImg(72)}</div>
@@ -514,7 +514,7 @@ views.welcome = () => {
 };
 
 function authForm(mode) {
-  $tabbar.classList.add("hidden");
+  hideTabs();
   const isReg = mode === "register";
   render(`
     <div style="max-width:400px;margin:40px auto 0">
@@ -565,7 +565,7 @@ function otpBoxHTML(idPrefix, label) {
 }
 
 function verifyEmailFlow(email, devCode, emailSent = true) {
-  $tabbar.classList.add("hidden");
+  hideTabs();
   render(`
     <div style="max-width:400px;margin:40px auto 0;text-align:center">
       <div style="font-size:48px" aria-hidden="true">📬</div>
@@ -689,7 +689,7 @@ const OB_STEPS = [
 ];
 
 views.onboarding = () => {
-  $tabbar.classList.add("hidden");
+  hideTabs();
   const answers = {};
   let step = 0;
   const finish = async () => {
@@ -1046,42 +1046,31 @@ function wireNudgeActions() {
 views.nudges = async () => {
   showTabs("nudges");
   render(`<h1>Nudges ✨</h1>
-    <p class="muted">Fresh nudge on top; your recent ones below. Every tap teaches HealthBuddy what works for you.</p>
-    <div id="fresh"></div><h2 class="section-gap">Recent</h2><div id="feed"><p class="muted">Loading…</p></div>`);
+    <p class="muted">One fresh nudge, plus today's card. Every tap teaches HealthBuddy what works for you.</p>
+    <div id="fresh"><p class="muted">Loading…</p></div>
+    <h2 class="section-gap">Card of the day 📖</h2>
+    <div id="hero"><p class="muted">Loading…</p></div>`);
+
   try {
     const { nudge } = await api("/nudges/next");
     document.getElementById("fresh").innerHTML = nudgeCardHTML(nudge, true);
     wireNudgeActions();
-  } catch (e) { document.getElementById("fresh").innerHTML = `<p class="muted">${esc(e.message)}</p>`; }
-  const { feed } = await api("/nudges/feed");
-  document.getElementById("feed").innerHTML = feed.length
-    ? feed.slice(1).map((n) => nudgeCardHTML(n)).join("") || `<p class="muted">That was your first one!</p>`
-    : `<p class="muted">No nudges yet — your first one is waiting above.</p>`;
-};
+  } catch (e) {
+    document.getElementById("fresh").innerHTML = `<p class="muted">${esc(e.message)}</p>`;
+  }
 
-/* --- explore / knowledge hub --- */
-views.explore = async () => {
-  showTabs("explore");
-  render(`<h1>Explore 📚</h1><div id="hero"></div>
-    <div class="cat-filter" id="filters" role="group" aria-label="Filter by category"></div>
-    <div id="cardlist"><p class="muted">Loading…</p></div>`);
-  const [{ card }, all] = await Promise.all([api("/cards/daily"), api("/cards")]);
-  document.getElementById("hero").innerHTML = `
-    <div class="hero-card"><span class="small" style="font-weight:800">CARD OF THE DAY ${card.emoji}</span>
-      <h3>${esc(card.title)}</h3><p class="small">${esc(card.deep_dive || card.body)}</p></div>`;
-  let active = null;
-  const drawFilters = () => {
-    document.getElementById("filters").innerHTML =
-      [`<button class="chipbtn" aria-pressed="${active === null}" data-cat="">All</button>`,
-        ...all.categories.map((c) =>
-          `<button class="chipbtn" style="--cat:${c.color}" aria-pressed="${active === c.key}" data-cat="${c.key}">${c.emoji} ${c.label}</button>`)].join("");
-    document.querySelectorAll("#filters .chipbtn").forEach((b) => b.onclick = () => { active = b.dataset.cat || null; drawFilters(); drawList(); });
-  };
-  const drawList = () => {
-    const cards = all.cards.filter((c) => !active || c.category === active);
-    document.getElementById("cardlist").innerHTML = cards.map((n) => nudgeCardHTML(n)).join("");
-  };
-  drawFilters(); drawList();
+  /* Card of the day used to live in Explore; it's the one piece worth
+     keeping, so it now sits under the nudge. Same card for everyone,
+     changes once a day. */
+  try {
+    const { card } = await api("/cards/daily");
+    document.getElementById("hero").innerHTML = `
+      <div class="hero-card">
+        <span class="small" style="font-weight:800">CARD OF THE DAY ${card.emoji}</span>
+        <h3>${esc(card.title)}</h3>
+        <p class="small">${esc(card.deep_dive || card.body)}</p>
+      </div>`;
+  } catch (_) { document.getElementById("hero").innerHTML = ""; }
 };
 
 /* --- challenges --- */
@@ -1164,6 +1153,16 @@ views.profile = async () => {
         <span class="muted small">· ${p.badges.filter((b) => b.earned).length}/${p.badges.length}</span></div>
     </div>
 
+    <details class="fold" open><summary>🏆 Leaderboard</summary>
+      <div class="card">
+        <div class="seg" role="group" aria-label="Leaderboard scope">
+          <button data-scope="buddies" aria-pressed="true">🐝 My buddies</button>
+          <button data-scope="global" aria-pressed="false">🌍 Everyone</button>
+        </div>
+        <div id="lb-body" class="section-gap"><p class="muted small">Loading…</p></div>
+      </div>
+    </details>
+
     <details class="fold"><summary>🐝 Buddies${bud.buddies.length ? ` · ${bud.buddies.length}` : ""}</summary>
     <div class="card">
       <p class="small">Your buddy code: <strong>${esc(bud.my_code)}</strong> — share it so a friend can link up. You'll see each other's streaks.</p>
@@ -1205,6 +1204,12 @@ views.profile = async () => {
 
     <button class="btn btn-ghost btn-block section-gap" id="signout">Sign out</button>`);
 
+  loadLeaderboard("buddies");
+  $screen.querySelectorAll("[data-scope]").forEach((b) => b.onclick = () => {
+    $screen.querySelectorAll("[data-scope]").forEach((x) =>
+      x.setAttribute("aria-pressed", String(x === b)));
+    loadLeaderboard(b.dataset.scope);
+  });
   $screen.querySelectorAll("[data-unbuddy]").forEach((b) => b.onclick = async () => {
     const { message } = await api(`/buddies/${b.dataset.unbuddy}`, { method: "DELETE" });
     toast(message); views.profile();
@@ -1283,10 +1288,35 @@ async function renderPushCard() {
 }
 
 /* ---------------- router & boot ---------------- */
+/* --- side menu: hidden by default, opened by the ☰ button ------------- */
+const $menuBtn = document.getElementById("menu-btn");
+const $scrim = document.getElementById("nav-scrim");
+
+function openNav(open) {
+  $tabbar.classList.toggle("is-open", open);
+  $tabbar.setAttribute("aria-hidden", String(!open));
+  $scrim.classList.toggle("hidden", !open);
+  $scrim.hidden = !open;
+  $menuBtn.setAttribute("aria-expanded", String(open));
+  if (open) $tabbar.querySelector(".tab.active, .tab")?.focus();
+}
+
 function showTabs(active) {
   $tabbar.classList.remove("hidden");
+  $menuBtn.classList.remove("hidden");
   $tabbar.querySelectorAll(".tab").forEach((t) =>
     t.classList.toggle("active", t.dataset.route === active));
+  const label = $tabbar.querySelector(".tab.active span:last-child");
+  if (label) $menuBtn.setAttribute("aria-label", `Menu — currently ${label.textContent}`);
+  const who = document.getElementById("nav-user");
+  if (who && state.user) who.textContent = state.user.name || "";
+  openNav(false);
+}
+
+function hideTabs() {
+  $tabbar.classList.add("hidden");
+  $menuBtn.classList.add("hidden");
+  openNav(false);
 }
 
 function go(target) {
@@ -1308,7 +1338,12 @@ document.addEventListener("click", (e) => {
   const nav = e.target.closest("[data-go]");
   if (nav) go(nav.dataset.go);
   const tab = e.target.closest(".tab");
-  if (tab) go(tab.dataset.route);
+  if (tab) { openNav(false); go(tab.dataset.route); }
+  if (e.target.closest("#menu-btn")) openNav(!$tabbar.classList.contains("is-open"));
+  if (e.target.closest("#nav-close") || e.target.closest("#nav-scrim")) openNav(false);
+});
+document.addEventListener("keydown", (e) => {          /* Esc closes the menu */
+  if (e.key === "Escape" && $tabbar.classList.contains("is-open")) openNav(false);
 });
 window.addEventListener("hashchange", route);
 
@@ -1324,6 +1359,37 @@ window.addEventListener("hashchange", route);
   }
   route();
 })();
+
+/* --- leaderboard: compete with buddies, or with everyone ------------------
+   Only public progress is shown (XP, level, badges, best streak) — never
+   habit logs, steps, screen time or cycle data. */
+async function loadLeaderboard(scope) {
+  const host = document.getElementById("lb-body");
+  if (!host) return;
+  host.innerHTML = `<p class="muted small">Loading…</p>`;
+  try {
+    const data = await api(`/leaderboard?scope=${scope}`);
+    const medal = (r) => r === 1 ? "🥇" : r === 2 ? "🥈" : r === 3 ? "🥉" : r;
+    const row = (r) => `
+      <div class="lb-row ${r.is_you ? "is-you" : ""}">
+        <span class="rank">${medal(r.rank)}</span>
+        <span class="em" aria-hidden="true">${esc(r.avatar)}</span>
+        <span class="grow">${esc(r.name)}${r.is_you ? " (you)" : ""}</span>
+        <span class="lb-stats">Lv${r.level} · ${r.xp} XP${r.badges ? ` · ${r.badges}🏅` : ""}</span>
+      </div>`;
+    const rows = data.rows.map(row).join("");
+    const outside = data.you && data.you.outside_top
+      ? `<p class="muted small" style="text-align:center">· · ·</p>${row(data.you)}` : "";
+    host.innerHTML = (rows || `<p class="muted small">Link a buddy to start competing 🐝</p>`)
+      + outside
+      + `<p class="muted small section-gap">${scope === "global"
+          ? `Ranked by XP across ${data.total_players} HealthBuddy user${data.total_players === 1 ? "" : "s"}.`
+          : "You and your linked buddies, ranked by XP."}
+         Only XP, level and badges are shared — never your health data.</p>`;
+  } catch (e) {
+    host.innerHTML = `<p class="muted small">${esc(e.message)}</p>`;
+  }
+}
 
 /* --- Edit Profile --- */
 views.edit_profile = async () => {

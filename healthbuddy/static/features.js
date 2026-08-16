@@ -5,7 +5,7 @@
 /* =============== Period Care =============== */
 
 views.pc_offer = () => {
-  $tabbar.classList.add("hidden");
+  hideTabs();
   render(`
     <div style="max-width:400px;margin:40px auto 0;text-align:center">
       <div style="font-size:56px" aria-hidden="true">🌸</div>
@@ -21,7 +21,7 @@ views.pc_offer = () => {
 };
 
 views.pc_setup = () => {
-  $tabbar.classList.add("hidden");
+  hideTabs();
   const today = new Date().toISOString().slice(0, 10);
   render(`
     <div style="max-width:400px;margin:24px auto 0">
@@ -106,6 +106,9 @@ async function loadBell() {
     const { notifications } = await api("/notifications");
     const bell = document.getElementById("bell");
     if (!bell) return;
+    /* Nothing pending → no bell at all. An empty "all quiet" popup is a
+       dead end; better to simply not offer the tap. */
+    if (!notifications.length) { bell.remove(); return; }
     bell.dataset.n = notifications.length;
     bell.onclick = () => modal(`
       <h2>For you right now 🔔</h2>
@@ -119,7 +122,7 @@ async function loadBell() {
               <button class="btn btn-primary btn-sm" data-mchk="yes">Yes</button>
               <button class="btn btn-ghost btn-sm" data-mchk="no">Not yet</button></div>` : ""}
             </div>
-          </div>`).join("") || `<p class="muted">All quiet — you're on top of things. ✨</p>`}
+          </div>`).join("")}
       </div>
       <p class="muted small section-gap">On the phone app these arrive as push notifications, quiet hours respected.</p>
       <button class="btn btn-ghost btn-block section-gap" data-close>Close</button>`);
@@ -541,6 +544,11 @@ views.home = async () => {
 
 /* One quiet line that tells us exactly which world the app is running in —
    screenshot this if Connect ever misbehaves. */
+/* Developer-only line ("App build: android · step sensor: ready ✓").
+   Useful when debugging a device, noise for everyone else — so it's off.
+   Flip to true, or run with ?debug=1, when you need it. */
+const SHOW_DEVICE_DIAGNOSTIC = /[?&]debug=1/.test(location.search || "");
+
 function deviceDiagnostic() {
   const s = Providers.status();
   if (!s.bridge) return "Running as a website — automatic sensors need the installed app.";
@@ -565,6 +573,9 @@ async function loadPermissionsCenter(gender, cycleEnabled) {
         " Not readable on web/iPhone — manual entry only, and that's okay.",
     };
     const rows = integrations
+      /* "notifications" already has its own section higher up in Profile, and
+         its Connect button here fell through to the manual-entry dialog. */
+      .filter((i) => i.key !== "notifications")
       .filter((i) => !(i.key === "period_care" && gender === "male" && !cycleEnabled))
       .map((i) => `
       <div class="perm-row">
@@ -578,7 +589,7 @@ async function loadPermissionsCenter(gender, cycleEnabled) {
        <div class="card">
          <p class="muted small">HealthBuddy only uses data you explicitly share, only to personalize your nudges. Nothing here is ever visible to buddies or leaderboards.</p>
          ${rows}
-         <p class="muted small" style="margin-top:10px">${deviceDiagnostic()}</p>
+         ${SHOW_DEVICE_DIAGNOSTIC ? `<p class="muted small" style="margin-top:10px">${deviceDiagnostic()}</p>` : ""}
        </div>`);
     $screen.querySelectorAll("[data-perm]").forEach((b) => b.onclick = async () => {
       const [kind, status] = b.dataset.perm.split(":");
