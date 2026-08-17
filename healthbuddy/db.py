@@ -146,6 +146,12 @@ CREATE TABLE IF NOT EXISTS device_wellbeing_daily (
     last_synced_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (user_id, date)
 );
+CREATE TABLE IF NOT EXISTS user_location (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+    lat REAL NOT NULL,
+    lon REAL NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS integrations (
     user_id INTEGER NOT NULL REFERENCES users(id),
     integration_type TEXT NOT NULL,

@@ -497,6 +497,47 @@ async function maybePromptForPush() {
 }
 
 
+/* ---------------- location personalization ----------------
+   Powers services/weather.py, which flavors nudges with the user's local
+   weather (hot-day hydration reminders, rain warnings, high-UV sun-care
+   tips, etc). Entirely optional: declining, an error, or never asking
+   just leaves weather_ok=False on the server forever - nothing else in
+   the app depends on it. */
+function requestBrowserLocation() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) return reject(new Error("Location isn't supported on this device."));
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+      (err) => reject(err),
+      { timeout: 10000, maximumAge: 5 * 60 * 1000 },
+    );
+  });
+}
+
+async function enableLocation() {
+  const coords = await requestBrowserLocation();
+  await api("/location", { method: "POST", body: coords });
+  try { localStorage.setItem("hb_location_shared", "1"); } catch (_) {}
+  return coords;
+}
+
+/* Best-effort status for the Profile toggle. The Permissions API isn't
+   available everywhere (notably Safari for "geolocation" in some
+   versions), so a locally-remembered "we already got coords once" flag
+   backs it up rather than leaving the card stuck on "undecided". */
+async function locationStatus() {
+  try { if (localStorage.getItem("hb_location_shared") === "1") return "on"; } catch (_) {}
+  if (!navigator.geolocation) return "unsupported";
+  if (navigator.permissions?.query) {
+    try {
+      const p = await navigator.permissions.query({ name: "geolocation" });
+      if (p.state === "denied") return "denied";
+      if (p.state === "granted") return "on";
+    } catch (_) { /* some browsers don't know "geolocation" - fall through */ }
+  }
+  return "undecided";
+}
+
 /* ---------------- views ---------------- */
 const views = {};
 
@@ -705,6 +746,35 @@ views.onboarding = () => {
   const advance = () => {
     if (step < OB_STEPS.length - 1) { step++; setTimeout(draw, 180); } else finish();
   };
+  /* First thing a new user sees: a dedicated ask for location access,
+     separate from the choice-grid questions below since it's a real OS/
+     browser permission prompt, not a tap-a-card answer. Allow or skip,
+     either way it only leads into the normal onboarding steps. */
+  const drawLocation = () => {
+    render(`
+      <div style="max-width:400px;margin:40px auto 0;text-align:center">
+        <div style="font-size:48px" aria-hidden="true">📍</div>
+        <h1>Mind sharing your location?</h1>
+        <p class="muted">It lets HealthBuddy tailor nudges to your local weather — like a
+        hydration reminder on a hot day or a heads-up before a rainy walk.
+        Totally optional, and you can turn it on or off later in Profile.</p>
+        <button class="btn btn-primary btn-block section-gap" id="loc-allow">Allow location access</button>
+        <button class="btn btn-ghost btn-block" id="loc-skip">Not now</button>
+      </div>`);
+    const allowBtn = document.getElementById("loc-allow");
+    allowBtn.onclick = async () => {
+      allowBtn.disabled = true;
+      allowBtn.textContent = "Getting your location…";
+      try {
+        await enableLocation();
+        toast("Location enabled — thanks! 🌦️");
+      } catch (e) {
+        toast("Couldn't get your location — you can try again anytime in Profile.");
+      }
+      draw();
+    };
+    document.getElementById("loc-skip").onclick = draw;
+  };
   const draw = () => {
     const s = OB_STEPS[step];
     render(`
@@ -745,7 +815,7 @@ views.onboarding = () => {
       });
     }
   };
-  draw();
+  drawLocation();
 };
 
 /* --- home dashboard --- */
@@ -1178,6 +1248,9 @@ views.profile = async () => {
     <details class="fold"><summary>🔔 Notifications</summary>
     <div class="card" id="push-card"><p class="muted small">Checking status…</p></div>
     </details>
+    <details class="fold"><summary>📍 Location</summary>
+    <div class="card" id="loc-card"><p class="muted small">Checking status…</p></div>
+    </details>
     <details class="fold"><summary>🧠 Why am I seeing this?</summary>
     <div class="card">
       <p class="muted small">${esc(t.explanation)}</p>
@@ -1234,7 +1307,44 @@ views.profile = async () => {
     views.profile();
   });
   renderPushCard();
+  renderLocationCard();
 };
+
+async function renderLocationCard() {
+  const card = document.getElementById("loc-card");
+  if (!card) return;
+  let status;
+  try {
+    status = await locationStatus();
+  } catch (e) {
+    console.error("[location] renderLocationCard failed:", e);
+    status = "error";
+  }
+  const copy = {
+    unsupported: ["😕", "Not supported on this browser.", null],
+    denied: ["🚫", "Blocked — enable location for HealthBuddy in your device/browser settings.", null],
+    undecided: ["📍", "Off — share it for weather-aware nudges, like hydration reminders on hot days.", "on"],
+    on: ["✅", "On — nudges factor in your local weather.", null],
+    error: ["⚠️", "Couldn't check location status.", "on"],
+  }[status] || ["📍", "Unknown status.", "on"];
+  const [emoji, text, action] = copy;
+  card.innerHTML = `
+    <div class="check-row">
+      <span class="em" aria-hidden="true">${emoji}</span>
+      <div class="grow"><span class="small">${text}</span></div>
+      ${action === "on" ? `<button class="btn btn-primary btn-sm" id="loc-toggle">Enable</button>` : ""}
+    </div>`;
+  document.getElementById("loc-toggle")?.addEventListener("click", async () => {
+    try {
+      await enableLocation();
+      toast("Location enabled — thanks! 🌦️");
+    } catch (e) {
+      toast(e.message === "Location isn't supported on this device."
+        ? e.message : "Couldn't get your location — check your permission settings.");
+    }
+    renderLocationCard();
+  });
+}
 
 async function renderPushCard() {
   const card = document.getElementById("push-card");
