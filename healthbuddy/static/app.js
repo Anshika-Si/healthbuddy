@@ -497,47 +497,6 @@ async function maybePromptForPush() {
 }
 
 
-/* ---------------- location personalization ----------------
-   Powers services/weather.py, which flavors nudges with the user's local
-   weather (hot-day hydration reminders, rain warnings, high-UV sun-care
-   tips, etc). Entirely optional: declining, an error, or never asking
-   just leaves weather_ok=False on the server forever - nothing else in
-   the app depends on it. */
-function requestBrowserLocation() {
-  return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) return reject(new Error("Location isn't supported on this device."));
-    navigator.geolocation.getCurrentPosition(
-      (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
-      (err) => reject(err),
-      { timeout: 10000, maximumAge: 5 * 60 * 1000 },
-    );
-  });
-}
-
-async function enableLocation() {
-  const coords = await requestBrowserLocation();
-  await api("/location", { method: "POST", body: coords });
-  try { localStorage.setItem("hb_location_shared", "1"); } catch (_) {}
-  return coords;
-}
-
-/* Best-effort status for the Profile toggle. The Permissions API isn't
-   available everywhere (notably Safari for "geolocation" in some
-   versions), so a locally-remembered "we already got coords once" flag
-   backs it up rather than leaving the card stuck on "undecided". */
-async function locationStatus() {
-  try { if (localStorage.getItem("hb_location_shared") === "1") return "on"; } catch (_) {}
-  if (!navigator.geolocation) return "unsupported";
-  if (navigator.permissions?.query) {
-    try {
-      const p = await navigator.permissions.query({ name: "geolocation" });
-      if (p.state === "denied") return "denied";
-      if (p.state === "granted") return "on";
-    } catch (_) { /* some browsers don't know "geolocation" - fall through */ }
-  }
-  return "undecided";
-}
-
 /* ---------------- views ---------------- */
 const views = {};
 
@@ -739,41 +698,11 @@ views.onboarding = () => {
       state.user = data.user;
       rewardFeedback({ xp_earned: data.xp_earned, new_badges: [] });
       toast("You're all set! 🌱");
-      go("home");
-      await maybePromptForPush();
+      go("location_ask");          /* weather step, then home */
     } catch (e) { toast(e.message); }
   };
   const advance = () => {
     if (step < OB_STEPS.length - 1) { step++; setTimeout(draw, 180); } else finish();
-  };
-  /* First thing a new user sees: a dedicated ask for location access,
-     separate from the choice-grid questions below since it's a real OS/
-     browser permission prompt, not a tap-a-card answer. Allow or skip,
-     either way it only leads into the normal onboarding steps. */
-  const drawLocation = () => {
-    render(`
-      <div style="max-width:400px;margin:40px auto 0;text-align:center">
-        <div style="font-size:48px" aria-hidden="true">📍</div>
-        <h1>Mind sharing your location?</h1>
-        <p class="muted">It lets HealthBuddy tailor nudges to your local weather — like a
-        hydration reminder on a hot day or a heads-up before a rainy walk.
-        Totally optional, and you can turn it on or off later in Profile.</p>
-        <button class="btn btn-primary btn-block section-gap" id="loc-allow">Allow location access</button>
-        <button class="btn btn-ghost btn-block" id="loc-skip">Not now</button>
-      </div>`);
-    const allowBtn = document.getElementById("loc-allow");
-    allowBtn.onclick = async () => {
-      allowBtn.disabled = true;
-      allowBtn.textContent = "Getting your location…";
-      try {
-        await enableLocation();
-        toast("Location enabled — thanks! 🌦️");
-      } catch (e) {
-        toast("Couldn't get your location — you can try again anytime in Profile.");
-      }
-      draw();
-    };
-    document.getElementById("loc-skip").onclick = draw;
   };
   const draw = () => {
     const s = OB_STEPS[step];
@@ -815,7 +744,7 @@ views.onboarding = () => {
       });
     }
   };
-  drawLocation();
+  draw();
 };
 
 /* --- home dashboard --- */
@@ -880,6 +809,7 @@ views.home = async () => {
   });
   wireBuddyTap();
   noticeLevelUp(d.level);
+  loadWeatherChip();
   loadDailyPlan();
   loadActivityCard(d);
   loadScreenTimeCard();
@@ -1248,9 +1178,6 @@ views.profile = async () => {
     <details class="fold"><summary>🔔 Notifications</summary>
     <div class="card" id="push-card"><p class="muted small">Checking status…</p></div>
     </details>
-    <details class="fold"><summary>📍 Location</summary>
-    <div class="card" id="loc-card"><p class="muted small">Checking status…</p></div>
-    </details>
     <details class="fold"><summary>🧠 Why am I seeing this?</summary>
     <div class="card">
       <p class="muted small">${esc(t.explanation)}</p>
@@ -1307,44 +1234,7 @@ views.profile = async () => {
     views.profile();
   });
   renderPushCard();
-  renderLocationCard();
 };
-
-async function renderLocationCard() {
-  const card = document.getElementById("loc-card");
-  if (!card) return;
-  let status;
-  try {
-    status = await locationStatus();
-  } catch (e) {
-    console.error("[location] renderLocationCard failed:", e);
-    status = "error";
-  }
-  const copy = {
-    unsupported: ["😕", "Not supported on this browser.", null],
-    denied: ["🚫", "Blocked — enable location for HealthBuddy in your device/browser settings.", null],
-    undecided: ["📍", "Off — share it for weather-aware nudges, like hydration reminders on hot days.", "on"],
-    on: ["✅", "On — nudges factor in your local weather.", null],
-    error: ["⚠️", "Couldn't check location status.", "on"],
-  }[status] || ["📍", "Unknown status.", "on"];
-  const [emoji, text, action] = copy;
-  card.innerHTML = `
-    <div class="check-row">
-      <span class="em" aria-hidden="true">${emoji}</span>
-      <div class="grow"><span class="small">${text}</span></div>
-      ${action === "on" ? `<button class="btn btn-primary btn-sm" id="loc-toggle">Enable</button>` : ""}
-    </div>`;
-  document.getElementById("loc-toggle")?.addEventListener("click", async () => {
-    try {
-      await enableLocation();
-      toast("Location enabled — thanks! 🌦️");
-    } catch (e) {
-      toast(e.message === "Location isn't supported on this device."
-        ? e.message : "Couldn't get your location — check your permission settings.");
-    }
-    renderLocationCard();
-  });
-}
 
 async function renderPushCard() {
   const card = document.getElementById("push-card");
@@ -1469,6 +1359,126 @@ window.addEventListener("hashchange", route);
   }
   route();
 })();
+
+/* Small weather line under the greeting. Absent when no location is set —
+   never a placeholder or a fake temperature. */
+async function loadWeatherChip() {
+  try {
+    const { weather, location } = await api("/weather");
+    if (!weather) return;
+    const h1 = $screen.querySelector("h1");
+    if (!h1) return;
+    const place = location && location.label ? esc(location.label.split(",")[0]) : "";
+    h1.insertAdjacentHTML("afterend",
+      `<p class="weather-chip">${weather.emoji} ${Math.round(weather.temp)}°C · ${esc(weather.label)}${place ? ` · ${place}` : ""}
+       <span class="muted small">${weather.rain_chance != null ? `· ${weather.rain_chance}% rain today` : ""}</span></p>`);
+  } catch (_) { /* weather is decoration on Home; never load-bearing */ }
+}
+
+/* --- location: asked once at sign-up, always skippable ------------------
+   Weather-aware nudges need a rough location. We ask plainly, explain what
+   it's for, store only ~1 km precision, and let people skip or type a city
+   instead of granting the OS permission. Skipping costs nothing — the app
+   just has no weather flags. */
+views.location_ask = () => {
+  hideTabs();
+  render(`
+    <div style="max-width:420px;margin:34px auto 0;text-align:center">
+      <div style="font-size:52px" aria-hidden="true">🌦️</div>
+      <h1>Weather-smart nudges?</h1>
+      <p class="muted">If you share your rough location, HealthBuddy can time
+      nudges to the actual weather — "rain's started, grab the umbrella",
+      "it's 40° out, hydrate before you melt", "perfect evening for a walk".</p>
+      <div class="card" style="text-align:left">
+        <p class="small"><strong>What we store:</strong> your city-level position,
+        rounded to about a kilometre. Never your exact address, never a history
+        of where you've been.</p>
+        <p class="small" style="margin-top:8px"><strong>Never shared:</strong>
+        not with buddies, not on the leaderboard. Delete it any time from
+        Profile → Data &amp; Permissions.</p>
+      </div>
+      <button class="btn btn-primary btn-block section-gap" id="loc-allow">Use my location</button>
+      <button class="btn btn-ghost btn-block" id="loc-city">Type my city instead</button>
+      <button class="btn btn-link" id="loc-skip">Skip for now</button>
+      <p class="muted small section-gap">Weather by Open-Meteo</p>
+    </div>`);
+
+  document.getElementById("loc-allow").onclick = () => requestLocation(() => go("home"));
+  document.getElementById("loc-city").onclick = () => cityPickerFlow(() => go("home"));
+  document.getElementById("loc-skip").onclick = async () => {
+    toast("No problem — you can add it later from Profile.");
+    go("home");
+    await maybePromptForPush();
+  };
+};
+
+/* Ask the OS for coordinates. Uses the native Geolocation plugin inside the
+   phone app, the browser API on web; both go through the same save call. */
+async function requestLocation(done) {
+  const finish = async (lat, lon, source) => {
+    try {
+      const data = await api("/location", { method: "POST", body: { lat, lon, source } });
+      toast(data.message);
+    } catch (e) { toast(e.message); }
+    if (done) done();
+    await maybePromptForPush();
+  };
+
+  const native = window.Capacitor?.Plugins?.Geolocation;
+  if (native) {
+    try {
+      const pos = await native.getCurrentPosition({ enableHighAccuracy: false, timeout: 12000 });
+      return finish(pos.coords.latitude, pos.coords.longitude, "device");
+    } catch (_) {
+      toast("Couldn't read your location — you can type your city instead.");
+      return cityPickerFlow(done);
+    }
+  }
+  if (!navigator.geolocation) return cityPickerFlow(done);
+  navigator.geolocation.getCurrentPosition(
+    (pos) => finish(pos.coords.latitude, pos.coords.longitude, "device"),
+    () => { toast("Location permission declined — you can type your city instead."); cityPickerFlow(done); },
+    { enableHighAccuracy: false, timeout: 12000, maximumAge: 600000 });
+}
+
+/* Manual fallback: search a city, pick from the matches. */
+function cityPickerFlow(done) {
+  modal(`<h2>Which city are you in? 🏙️</h2>
+    <p class="muted small">Used only to look up the weather.</p>
+    <div class="field"><label for="city-q">City</label>
+      <input id="city-q" placeholder="e.g. Kanpur" autocomplete="address-level2"></div>
+    <button class="btn btn-primary btn-block" id="city-go">Search</button>
+    <div id="city-results" class="section-gap"></div>
+    <button class="btn btn-ghost btn-block section-gap" data-close>Cancel</button>`);
+  setTimeout(() => {
+    const input = document.getElementById("city-q");
+    const results = document.getElementById("city-results");
+    input.focus();
+    const search = async () => {
+      results.innerHTML = `<p class="muted small">Searching…</p>`;
+      try {
+        const { results: hits } = await api(`/location/search?q=${encodeURIComponent(input.value)}`);
+        results.innerHTML = hits.length
+          ? hits.map((h) => `<button class="btn btn-ghost btn-block section-gap"
+               data-lat="${h.lat}" data-lon="${h.lon}" data-label="${esc(h.label)}">${esc(h.label)}</button>`).join("")
+          : `<p class="muted small">No matches — try a bigger nearby city.</p>`;
+        results.querySelectorAll("[data-lat]").forEach((b) => b.onclick = async () => {
+          try {
+            const data = await api("/location", { method: "POST", body: {
+              lat: +b.dataset.lat, lon: +b.dataset.lon,
+              label: b.dataset.label, source: "manual" } });
+            document.querySelector(".modal-backdrop")?.remove();
+            toast(data.message);
+            if (done) done();
+            await maybePromptForPush();
+          } catch (e) { toast(e.message); }
+        });
+      } catch (e) { results.innerHTML = `<p class="muted small">${esc(e.message)}</p>`; }
+    };
+    document.getElementById("city-go").onclick = search;
+    input.onkeydown = (e) => { if (e.key === "Enter") search(); };
+  }, 0);
+}
 
 /* --- leaderboard: compete with buddies, or with everyone ------------------
    Only public progress is shown (XP, level, badges, best streak) — never

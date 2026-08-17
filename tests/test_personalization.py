@@ -1,4 +1,5 @@
 """Tests for personalization v2: daily plan, profile, activity, permissions."""
+import json
 import os
 import sys
 import tempfile
@@ -8,6 +9,7 @@ from datetime import date, datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from healthbuddy import create_app
+from healthbuddy.db import query
 from healthbuddy.services import daily_plan, segmentation, notify
 
 
@@ -186,3 +188,71 @@ class UndoLogTestCase(PersonalizationTestCase):
         self.assertEqual(xp_before - xp_after, 5)
         self.assertEqual(self.client.delete("/api/logs/water", headers=h).status_code, 404)
         self.assertEqual(self.client.delete("/api/logs/chai", headers=h).status_code, 400)
+
+
+class LeaderboardTestCase(PersonalizationTestCase):
+    """The competitive leaderboard: both scopes, correct ranking, no leaks."""
+
+    def _user(self, email, xp_reason_count=0):
+        h = self.auth(email=email)
+        for _ in range(xp_reason_count):
+            self.client.post("/api/logs", headers=h, json={"type": "water", "value": 1})
+        return h
+
+    def test_buddy_scope_only_includes_linked_people(self):
+        me = self._user("me@example.com")
+        other = self._user("stranger@example.com", 3)
+        buddy = self._user("buddy@example.com", 1)
+        code = self.client.get("/api/buddies", headers=buddy).get_json()["my_code"]
+        self.client.post("/api/buddies/link", headers=me, json={"code": code})
+
+        data = self.client.get("/api/leaderboard?scope=buddies", headers=me).get_json()
+        names = [r["name"] for r in data["rows"]]
+        self.assertEqual(len(data["rows"]), 2)          # me + buddy, not the stranger
+        self.assertEqual(data["scope"], "buddies")
+        self.assertTrue(any(r["is_you"] for r in data["rows"]))
+
+    def test_global_scope_ranks_everyone_by_xp(self):
+        me = self._user("g1@example.com", 1)
+        rich = self._user("g2@example.com", 5)
+        data = self.client.get("/api/leaderboard?scope=global", headers=me).get_json()
+        self.assertEqual(data["scope"], "global")
+        xps = [r["xp"] for r in data["rows"]]
+        self.assertEqual(xps, sorted(xps, reverse=True))     # ranked high → low
+        self.assertEqual(data["rows"][0]["rank"], 1)
+        self.assertGreaterEqual(data["total_players"], 2)
+
+    def test_leaderboard_never_exposes_health_data(self):
+        me = self._user("p1@example.com", 2)
+        self.client.post("/api/logs", headers=me, json={"type": "mood", "value": 2})
+        self.client.post("/api/activity/manual", headers=me, json={"steps": 4200})
+        data = self.client.get("/api/leaderboard?scope=global", headers=me).get_json()
+        allowed = {"rank", "user_id", "name", "avatar", "xp", "level",
+                   "badges", "best_streak", "is_you", "outside_top"}
+        for row in data["rows"]:
+            self.assertTrue(set(row).issubset(allowed), f"leaked: {set(row) - allowed}")
+        blob = json.dumps(data)
+        for secret in ("water", "mood", "steps", "screen_time", "cycle"):
+            self.assertNotIn(secret, blob)
+
+    def test_your_row_is_appended_when_outside_the_top(self):
+        with self.app.app_context():
+            from healthbuddy.db import execute
+            # 3 higher-XP users so a limit of 2 pushes us out of the slice
+            for i in range(3):
+                execute("""INSERT INTO users (email, password_hash, name, buddy_code, onboarded)
+                           VALUES (?,?,?,?,1)""",
+                        (f"top{i}@example.com", "x", f"Top{i}", f"HB-TOP{i}0"))
+                uid = query("SELECT id FROM users WHERE email=?", (f"top{i}@example.com",), one=True)["id"]
+                execute("INSERT INTO xp_events (user_id, amount, reason) VALUES (?,?,?)",
+                        (uid, 500 + i, "test"))
+        me = self._user("low@example.com")
+        with self.app.app_context():
+            from healthbuddy.services import social
+            data = social.xp_leaderboard(
+                query("SELECT id FROM users WHERE email='low@example.com'", one=True)["id"],
+                scope="global", limit=2)
+        self.assertEqual(len(data["rows"]), 2)
+        self.assertIsNotNone(data["you"])
+        self.assertTrue(data["you"].get("outside_top"))
+        self.assertGreater(data["you"]["rank"], 2)

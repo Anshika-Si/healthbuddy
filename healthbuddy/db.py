@@ -146,12 +146,6 @@ CREATE TABLE IF NOT EXISTS device_wellbeing_daily (
     last_synced_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (user_id, date)
 );
-CREATE TABLE IF NOT EXISTS user_location (
-    user_id INTEGER PRIMARY KEY REFERENCES users(id),
-    lat REAL NOT NULL,
-    lon REAL NOT NULL,
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
 CREATE TABLE IF NOT EXISTS integrations (
     user_id INTEGER NOT NULL REFERENCES users(id),
     integration_type TEXT NOT NULL,
@@ -216,6 +210,11 @@ CREATE TABLE IF NOT EXISTS local_notification_events (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_local_notif_events_user ON local_notification_events(user_id, created_at);
+CREATE TABLE IF NOT EXISTS weather_cache (
+    grid_key TEXT PRIMARY KEY,      -- coarse lat/lon cell, e.g. "26.4,80.3"
+    payload TEXT NOT NULL,          -- JSON snapshot from the weather provider
+    fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS pending_signups (
     email TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -430,6 +429,13 @@ MIGRATIONS = [
     # Existing accounts default to verified so nobody already using the app
     # gets locked out; only NEW signups go through the OTP gate.
     ("users", "email_verified", "ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 1"),
+    # Location for weather-aware nudges. Coordinates are stored COARSE
+    # (2 decimal places ≈ 1 km) — enough for weather, useless for tracking.
+    ("users", "loc_lat",     "ALTER TABLE users ADD COLUMN loc_lat REAL"),
+    ("users", "loc_lon",     "ALTER TABLE users ADD COLUMN loc_lon REAL"),
+    ("users", "loc_label",   "ALTER TABLE users ADD COLUMN loc_label TEXT"),
+    ("users", "loc_source",  "ALTER TABLE users ADD COLUMN loc_source TEXT"),
+    ("users", "loc_updated_at", "ALTER TABLE users ADD COLUMN loc_updated_at TEXT"),
 ]
 
 
@@ -455,8 +461,11 @@ def init_db(app):
         for table, col, stmt in MIGRATIONS:
             if col not in _columns(db, table):
                 if is_postgres():
+                    # Migrations are DDL too — run them through the dialect
+                    # translator so SQLite-only types (e.g. REAL) become their
+                    # Postgres equivalents instead of relying on luck.
                     with db.cursor() as cur:
-                        cur.execute(stmt)
+                        cur.execute(translate_ddl(stmt))
                 else:
                     db.execute(stmt)
         db.commit()

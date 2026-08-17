@@ -584,13 +584,37 @@ async function loadPermissionsCenter(gender, cycleEnabled) {
           <p class="muted small">${esc(i.why)}${esc(autoNote[i.key] || "")}</p></div>
         ${permAction(i, gender)}
       </div>`).join("");
+    /* Location sits alongside the other integrations: same connect/disconnect
+       shape, same honesty about what's stored. */
+    let locRow = "";
+    try {
+      const { location } = await api("/location");
+      locRow = `
+      <div class="perm-row">
+        <span class="em" aria-hidden="true">📍</span>
+        <div class="grow"><strong>Location</strong>
+          ${location ? `<span class="chip done">On</span>` : `<span class="chip">Off</span>`}
+          <p class="muted small">Weather-aware nudges — rain alerts, heat hydration reminders,
+          "nice evening for a walk". Stored to about a kilometre, never shared with buddies.
+          ${location && location.label ? `Currently: ${esc(location.label)}.` : ""}</p></div>
+        ${location ? `<button class="btn btn-ghost btn-sm" data-loc="off">Delete</button>`
+                   : `<button class="btn btn-ghost btn-sm" data-loc="on">Turn on</button>`}
+      </div>`;
+    } catch (_) {}
+
     document.getElementById("signout")?.insertAdjacentHTML("beforebegin",
       `<h2 class="section-gap">Data & Permissions 🔒</h2>
        <div class="card">
          <p class="muted small">HealthBuddy only uses data you explicitly share, only to personalize your nudges. Nothing here is ever visible to buddies or leaderboards.</p>
-         ${rows}
+         ${rows}${locRow}
          ${SHOW_DEVICE_DIAGNOSTIC ? `<p class="muted small" style="margin-top:10px">${deviceDiagnostic()}</p>` : ""}
        </div>`);
+    $screen.querySelectorAll("[data-loc]").forEach((b) => b.onclick = async () => {
+      if (b.dataset.loc === "on") return requestLocation(() => views.profile());
+      const { message } = await api("/location", { method: "DELETE" });
+      toast(message);
+      views.profile();
+    });
     $screen.querySelectorAll("[data-perm]").forEach((b) => b.onclick = async () => {
       const [kind, status] = b.dataset.perm.split(":");
       if (kind === "period_setup") return go("pc_setup");

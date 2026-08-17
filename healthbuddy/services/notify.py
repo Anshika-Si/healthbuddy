@@ -75,6 +75,15 @@ TEMPLATES = [
 ]
 
 
+# Weather nudges live in their own module; appended here so the composer
+# treats them exactly like every other template.
+try:
+    from . import weather_nudges as _wn
+    TEMPLATES = TEMPLATES + _wn.TEMPLATES
+except Exception:
+    pass
+
+
 def _in_quiet_hours(user, now):
     start, end = user["quiet_start"], user["quiet_end"]
     hm = now.strftime("%H:%M")
@@ -111,6 +120,13 @@ def _context(user_id, now):
         flags["steps_low"] = False
     flags["_fatigued"] = set(ctx.get("fatigued_categories") or [])
     flags["_notif_enabled"] = ctx["profile"]["notif_enabled"]
+    # Weather-aware flags (services/weather_nudges.py). Empty dict when the
+    # user hasn't shared a location, so behaviour is unchanged for them.
+    try:
+        from . import weather_nudges
+        flags.update(weather_nudges.flags(user_id, hour=now.hour))
+    except Exception:
+        pass
     return flags
 
 

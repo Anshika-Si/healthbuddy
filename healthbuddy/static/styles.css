@@ -490,3 +490,8 @@ details.fold > .card { margin-top: 0; border-top-left-radius: 0; border-top-righ
 .me-chips { gap: 8px; margin: 12px 0 8px; }
 .fold > summary { padding: 14px 16px; }
 .perm-row { padding: 14px 0; gap: 12px; }
+
+/* ---------- weather ---------- */
+.weather-chip { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin: 2px 0 10px; font: 700 14px var(--font-body); color: var(--text); }
+.weather-chip .muted { font-weight: 600; }

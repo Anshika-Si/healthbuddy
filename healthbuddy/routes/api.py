@@ -11,7 +11,7 @@ from ..auth import (device_label_from_request, hash_password, issue_refresh_toke
 from ..config import CATEGORIES, CATEGORY_META
 from ..db import execute, query
 from ..services import (bandit, gamification, notify, notification_preview, nudges, push,
-                        scheduler, segmentation, social, weather)
+                        scheduler, segmentation, social)
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
@@ -498,24 +498,6 @@ def buddies():
 
 
 # ---------- Push notifications (real phone push, works app-closed) ----------
-
-@api.post("/location")
-@require_auth
-def save_location():
-    """Stores the device's last known coordinates so weather.py can flavor
-    nudges (hot/cold/rainy/high-UV). Purely optional - a user who never
-    calls this just gets weather_ok=False forever, no other feature cares."""
-    data = body()
-    try:
-        lat = float(data.get("lat"))
-        lon = float(data.get("lon"))
-    except (TypeError, ValueError):
-        return jsonify(error="Missing or invalid lat/lon."), 400
-    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
-        return jsonify(error="Coordinates out of range."), 400
-    weather.save_location(g.user["id"], lat, lon)
-    return jsonify(ok=True)
-
 
 @api.get("/push/public-key")
 def push_public_key():

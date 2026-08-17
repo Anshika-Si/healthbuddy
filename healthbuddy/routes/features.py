@@ -360,3 +360,55 @@ def xp_leaderboard():
     from ..services import social
     return jsonify(**social.xp_leaderboard(g.user["id"],
                                            scope=request.args.get("scope", "buddies")))
+
+
+# ---------------- Location & weather ----------------
+@bp.get("/location")
+@require_auth
+def get_location():
+    from ..services import weather
+    return jsonify(location=weather.get_location(g.user["id"]))
+
+
+@bp.post("/location")
+@require_auth
+def set_location():
+    """Save a coarse location (rounded to ~1 km server-side) after the user
+    has granted permission or picked a city manually."""
+    from ..services import weather
+    b = body()
+    try:
+        loc = weather.set_location(g.user["id"], b.get("lat"), b.get("lon"),
+                                   b.get("label"), b.get("source", "device"))
+    except (TypeError, ValueError) as e:
+        return jsonify(error=str(e) or "Those coordinates didn't look right."), 400
+    bundle = weather.for_user(g.user["id"])
+    return jsonify(location=loc, weather=(bundle or {}).get("weather"),
+                   message="Location saved 🌤️ Your nudges will now know the weather.")
+
+
+@bp.delete("/location")
+@require_auth
+def delete_location():
+    from ..services import weather
+    weather.clear_location(g.user["id"])
+    return jsonify(message="Location deleted. Weather nudges are off.")
+
+
+@bp.get("/location/search")
+@require_auth
+def location_search():
+    """Manual fallback — type a city name, choose from the matches."""
+    from ..services import weather
+    return jsonify(results=weather.search_city(request.args.get("q", "")))
+
+
+@bp.get("/weather")
+@require_auth
+def get_weather():
+    from ..services import weather
+    bundle = weather.for_user(g.user["id"])
+    if not bundle:
+        return jsonify(weather=None, location=None,
+                       hint="Share your location to get weather-aware nudges."), 200
+    return jsonify(**bundle)

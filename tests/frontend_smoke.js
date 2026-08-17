@@ -84,6 +84,15 @@ const API = {
     health_goals: ["general"], step_goal: 8000, notif_enabled: true, buddy_code: "HB-AAA111" } },
   "/permissions": { integrations: [{ key: "activity", emoji: "🚶", label: "Activity / Steps",
     status: "connected", why: "w" }] },
+  "/location": { location: { lat: 26.45, lon: 80.33, label: "Kanpur, India",
+    source: "device", updated_at: "2026-08-17 10:00" } },
+  "/weather": { location: { lat: 26.45, lon: 80.33, label: "Kanpur, India" },
+    weather: { temp: 34.2, feels_like: 39.1, humidity: 62, precip: 0, wind: 11,
+      is_day: true, code: 2, label: "Partly cloudy", emoji: "⛅", raining: false,
+      temp_max: 38.4, temp_min: 27.1, rain_chance: 20,
+      attribution: "Weather by Open-Meteo", as_of: "2026-08-17 10:00" },
+    conditions: { hot: true, very_hot: false, raining_now: false } },
+  "/location/search": { results: [{ label: "Kanpur, Uttar Pradesh, India", lat: 26.45, lon: 80.33 }] },
   "/notifications": { notifications: [{ id: "n", emoji: "💧", title: "T", body: "B", kind: "fun" }] },
   "/games": { games: [{ game: "memory", emoji: "🃏", label: "Memory", skill: "memory", plays: 0,
     best: null, trend_pct: null }], daily_game: "memory", play_streak: 0, brain_score: 10 },
@@ -103,7 +112,7 @@ const sandbox = {
   addEventListener() {}, removeEventListener() {}, dispatchEvent() {}, scrollTo() {}, alert() {}, confirm: () => true, requestAnimationFrame: (f) => setTimeout(f, 0),
   Capacitor: undefined, setTimeout, clearTimeout, setInterval, clearInterval,
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
-  location: { hash: "#home" },
+  location: { hash: "#home", search: "" },
   navigator: { serviceWorker: { register() {} } },
   prompt: () => "5",
   Date, Math, JSON, Object, Array, String, Number, Boolean, Promise, Error, RegExp, Set, Map,
@@ -133,7 +142,7 @@ for (const f of ["providers.js", "buddy.js", "app.js", "features.js"]) {
 
 /* ---------- render every screen ---------- */
 const SCREENS = ["welcome", "login", "register", "onboarding", "home", "nudges",
-                 "explore", "challenges", "profile", "edit_profile", "play", "wrapped",
+                 "challenges", "profile", "edit_profile", "play", "wrapped", "location_ask",
                  "pc_offer", "pc_setup"];
 let failed = 0;
 (async () => {
