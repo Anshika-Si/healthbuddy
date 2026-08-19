@@ -412,3 +412,88 @@ def get_weather():
         return jsonify(weather=None, location=None,
                        hint="Share your location to get weather-aware nudges."), 200
     return jsonify(**bundle)
+
+
+# ---------------- Flash cards (occasional profile questions) ----------------
+@bp.get("/flashcard")
+@require_auth
+def get_flashcard():
+    """The next card if one is due, else null. Called when Home loads."""
+    from ..services import flashcards
+    card = flashcards.due_card(g.user["id"], g.user["created_at"])
+    return jsonify(card=card)
+
+
+@bp.post("/flashcard")
+@require_auth
+def answer_flashcard():
+    from ..services import flashcards, gamification
+    b = body()
+    try:
+        flashcards.record(g.user["id"], b.get("question_id"),
+                          b.get("answer"), bool(b.get("skipped")))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    xp = 0 if b.get("skipped") else gamification.award_xp(g.user["id"], "habit_log")
+    return jsonify(ok=True, xp_earned=xp,
+                   message="Skipped — we won't ask again for a while."
+                           if b.get("skipped") else "Noted, thanks! 💚")
+
+
+@bp.get("/flashcard/answers")
+@require_auth
+def list_flashcard_answers():
+    from ..services import flashcards
+    return jsonify(answers=flashcards.answers(g.user["id"]))
+
+
+@bp.delete("/flashcard/answers")
+@require_auth
+def clear_flashcard_answers():
+    """Privacy: wipe everything the flash cards collected."""
+    from ..services import flashcards
+    flashcards.clear(g.user["id"], request.args.get("question_id"))
+    return jsonify(message="Deleted. Those answers are gone.")
+
+
+# ---------------- Body basics ----------------
+@bp.get("/body")
+@require_auth
+def get_body():
+    from ..services import body as body_svc
+    return jsonify(**body_svc.summary(g.user))
+
+
+@bp.patch("/body")
+@require_auth
+def patch_body():
+    """Height / weight / DOB — every field optional, blank clears it."""
+    from ..db import execute
+    from ..services import body as body_svc
+    b = body()
+    updates, params = [], []
+    try:
+        if "dob" in b:
+            if b["dob"]:
+                updates.append("dob=?"); params.append(body_svc.parse_dob(b["dob"]).isoformat())
+            else:
+                updates.append("dob=NULL")
+        if "height_cm" in b:
+            if b["height_cm"] not in (None, ""):
+                updates.append("height_cm=?"); params.append(body_svc.validate_height(b["height_cm"]))
+            else:
+                updates.append("height_cm=NULL")
+        if "weight_kg" in b:
+            if b["weight_kg"] not in (None, ""):
+                updates.append("weight_kg=?"); params.append(body_svc.validate_weight(b["weight_kg"]))
+            else:
+                updates.append("weight_kg=NULL")
+    except (ValueError, TypeError) as e:
+        return jsonify(error=str(e) or "Those numbers didn't look right."), 400
+    if not updates:
+        return jsonify(error="Nothing to update."), 400
+    params.append(g.user["id"])
+    execute("UPDATE users SET " + ", ".join(updates) + " WHERE id=?", tuple(params))
+    from ..db import query as q
+    return jsonify(message="Saved ✨",
+                   **body_svc.summary(q("SELECT * FROM users WHERE id=?", (g.user["id"],), one=True)))

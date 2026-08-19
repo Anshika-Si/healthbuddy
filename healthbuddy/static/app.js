@@ -686,6 +686,10 @@ const OB_STEPS = [
   { key: "gender", q: "How do you identify? (only used to pick better card content)", opts: [
     ["female", "🙋‍♀️", "Female"], ["male", "🙋‍♂️", "Male"],
     ["nonbinary", "🧑", "Non-binary"], ["prefer_not", "🤐", "Prefer not to say"]] },
+  /* Body basics — every field optional. Skipping costs nothing; we only use
+     these for age-aware wording and an informational BMI readout. */
+  { key: "body", fields: true, q: "A few basics (all optional)",
+    hint: "Only used for gentler, better-timed nudges — and an informational BMI. Leave anything blank." },
 ];
 
 views.onboarding = () => {
@@ -708,18 +712,54 @@ views.onboarding = () => {
     const s = OB_STEPS[step];
     render(`
       <div style="max-width:400px;margin:24px auto 0">
-        <div class="progress" role="progressbar" aria-valuenow="${step + 1}" aria-valuemin="1" aria-valuemax="4"
-             aria-label="Onboarding step ${step + 1} of 4"><div style="width:${((step + 1) / 4) * 100}%"></div></div>
+        <div class="progress" role="progressbar" aria-valuenow="${step + 1}" aria-valuemin="1" aria-valuemax="${OB_STEPS.length}"
+             aria-label="Onboarding step ${step + 1} of ${OB_STEPS.length}"><div style="width:${((step + 1) / OB_STEPS.length) * 100}%"></div></div>
         <h2>${s.q}</h2>
         ${s.hint ? `<p class="muted small">${s.hint}</p>` : ""}
+        ${s.fields ? `
+        <div class="card" style="text-align:left">
+          <div class="field"><label for="ob-dob">Date of birth</label>
+            <input id="ob-dob" type="date" max="${new Date().toISOString().slice(0, 10)}"></div>
+          <div class="field"><label for="ob-height">Height (cm)</label>
+            <input id="ob-height" type="number" inputmode="decimal" min="60" max="250" placeholder="e.g. 165"></div>
+          <div class="field"><label for="ob-weight">Weight (kg)</label>
+            <input id="ob-weight" type="number" inputmode="decimal" min="20" max="300" placeholder="e.g. 58"></div>
+          <p class="muted small">We show BMI as context, never a target — and there are no weight-loss nudges in this app.</p>
+          <p class="form-error" id="ob-err" role="alert"></p>
+        </div>` : ""}
         <div class="choice-grid">
-          ${s.opts.map(([v, em, label]) =>
+          ${(s.opts || []).map(([v, em, label]) =>
             `<button class="choice" data-v="${v}" aria-pressed="false">
                <span class="em" aria-hidden="true">${em}</span>${label}</button>`).join("")}
         </div>
         ${s.multi ? `<button class="btn btn-primary btn-block section-gap" id="ob-next" disabled>Continue</button>` : ""}
+        ${s.fields ? `<button class="btn btn-primary btn-block section-gap" id="ob-next">Continue</button>
+          <button class="btn btn-link" id="ob-skip">Skip this</button>` : ""}
         <p class="muted small">Your answers set your starting nudges. HealthBuddy keeps learning from what you actually do.</p>
       </div>`);
+    if (s.fields) {
+      const save = async (skip) => {
+        const err = document.getElementById("ob-err");
+        err.textContent = "";
+        if (!skip) {
+          const payload = {};
+          const dob = document.getElementById("ob-dob").value;
+          const h = document.getElementById("ob-height").value;
+          const w = document.getElementById("ob-weight").value;
+          if (dob) payload.dob = dob;
+          if (h) payload.height_cm = +h;
+          if (w) payload.weight_kg = +w;
+          if (Object.keys(payload).length) {
+            try { await api("/body", { method: "PATCH", body: payload }); }
+            catch (e) { err.textContent = e.message; return; }
+          }
+        }
+        advance();
+      };
+      document.getElementById("ob-next").onclick = () => save(false);
+      document.getElementById("ob-skip").onclick = () => save(true);
+      return;
+    }
     if (s.multi) {
       const picked = new Set(answers[s.key] || []);
       const sync = () => {
@@ -810,6 +850,8 @@ views.home = async () => {
   wireBuddyTap();
   noticeLevelUp(d.level);
   loadWeatherChip();
+  maybeAskLocation();
+  maybeShowFlashcard();
   loadDailyPlan();
   loadActivityCard(d);
   loadScreenTimeCard();
@@ -1153,6 +1195,14 @@ views.profile = async () => {
         <span class="muted small">· ${p.badges.filter((b) => b.earned).length}/${p.badges.length}</span></div>
     </div>
 
+    <details class="fold"><summary>📏 Body basics</summary>
+      <div class="card" id="body-block"><p class="muted small">Loading…</p></div>
+    </details>
+
+    <details class="fold"><summary>💬 What you've told us</summary>
+      <div class="card" id="fc-answers"><p class="muted small">Loading…</p></div>
+    </details>
+
     <details class="fold" open><summary>🏆 Leaderboard</summary>
       <div class="card">
         <div class="seg" role="group" aria-label="Leaderboard scope">
@@ -1204,6 +1254,8 @@ views.profile = async () => {
 
     <button class="btn btn-ghost btn-block section-gap" id="signout">Sign out</button>`);
 
+  loadBodyBlock();
+  loadFlashcardAnswers();
   loadLeaderboard("buddies");
   $screen.querySelectorAll("[data-scope]").forEach((b) => b.onclick = () => {
     $screen.querySelectorAll("[data-scope]").forEach((x) =>
@@ -1360,6 +1412,79 @@ window.addEventListener("hashchange", route);
   route();
 })();
 
+/* One-time gentle prompt for people who never got (or skipped past) the
+   location step. Asks at most once per device; "not now" is remembered. */
+async function maybeAskLocation() {
+  try {
+    if (localStorage.getItem("hb_loc_prompted")) return;
+    const { location } = await api("/location");
+    if (location) { localStorage.setItem("hb_loc_prompted", "1"); return; }
+    localStorage.setItem("hb_loc_prompted", "1");
+    setTimeout(() => modal(`<h2>🌦️ Weather-smart nudges?</h2>
+      <p class="muted small">Share your rough location and HealthBuddy can time
+      nudges to the actual weather — rain alerts, heat hydration reminders,
+      "perfect evening for a walk". Stored to about a kilometre, never shared,
+      delete it any time.</p>
+      <button class="btn btn-primary btn-block section-gap" id="ml-allow">Use my location</button>
+      <button class="btn btn-ghost btn-block" id="ml-city">Type my city</button>
+      <button class="btn btn-link" data-close>Not now</button>`), 900);
+    setTimeout(() => {
+      document.getElementById("ml-allow") && (document.getElementById("ml-allow").onclick = () => {
+        document.querySelector(".modal-backdrop")?.remove();
+        requestLocation(() => views.home());
+      });
+      document.getElementById("ml-city") && (document.getElementById("ml-city").onclick = () => {
+        document.querySelector(".modal-backdrop")?.remove();
+        cityPickerFlow(() => views.home());
+      });
+    }, 1000);
+  } catch (_) { /* never block Home on this */ }
+}
+
+/* --- flash cards: one small question every few days ------------------- */
+async function maybeShowFlashcard() {
+  try {
+    const { card } = await api("/flashcard");
+    if (!card) return;
+    setTimeout(() => showFlashcard(card), 1400);   // let Home settle first
+  } catch (_) { /* optional */ }
+}
+
+function showFlashcard(card) {
+  modal(`<div class="flashcard">
+      <div class="fc-emoji" aria-hidden="true">${card.emoji}</div>
+      <h2>${esc(card.q)}</h2>
+      <p class="muted small">${esc(card.why)}</p>
+      <div class="fc-options">
+        ${card.options.map((o) => `<button class="btn btn-ghost btn-block" data-fc="${esc(o)}">${esc(o)}</button>`).join("")}
+      </div>
+      ${card.free_text ? `<div class="field section-gap"><label for="fc-text">Or type it (optional)</label>
+        <input id="fc-text" maxlength="120" placeholder="Only if you want to"></div>
+        <button class="btn btn-primary btn-block" id="fc-save">Save</button>` : ""}
+      <button class="btn btn-link section-gap" id="fc-skip">Prefer not to say</button>
+      ${card.sensitive ? `<p class="muted small">Private to you — never shown to buddies, never used for ads. Delete any time in Profile.</p>` : ""}
+    </div>`);
+  const send = async (payload) => {
+    try {
+      const d = await api("/flashcard", { method: "POST", body: { question_id: card.id, ...payload } });
+      document.querySelector(".modal-backdrop")?.remove();
+      toast(d.message);
+      if (d.xp_earned) rewardFeedback(d);
+    } catch (e) { toast(e.message); }
+  };
+  setTimeout(() => {
+    document.querySelectorAll("[data-fc]").forEach((b) =>
+      b.onclick = () => send({ answer: b.dataset.fc }));
+    const saveBtn = document.getElementById("fc-save");
+    if (saveBtn) saveBtn.onclick = () => {
+      const v = document.getElementById("fc-text").value.trim();
+      if (!v) return toast("Type something, or pick an option above.");
+      send({ answer: v });
+    };
+    document.getElementById("fc-skip").onclick = () => send({ skipped: true });
+  }, 0);
+}
+
 /* Small weather line under the greeting. Absent when no location is set —
    never a placeholder or a fake temperature. */
 async function loadWeatherChip() {
@@ -1412,22 +1537,40 @@ views.location_ask = () => {
   };
 };
 
+/* Turn GPS coordinates into a real place name.
+   Uses BigDataCloud's free client-side reverse-geocoding endpoint (no API
+   key; their fair-use policy requires the call to come from the device, so
+   it runs here in the app, not on our server). If it fails we still save the
+   coordinates — the weather only needs those; the label is a nicety. */
+async function reverseGeocode(lat, lon) {
+  try {
+    const res = await fetch("https://api.bigdatacloud.net/data/reverse-geocode-client"
+      + `?latitude=${lat}&longitude=${lon}&localityLanguage=en`);
+    if (!res.ok) return null;
+    const d = await res.json();
+    const bits = [d.city || d.locality, d.principalSubdivision, d.countryName];
+    return bits.filter(Boolean).join(", ") || null;
+  } catch (_) { return null; }
+}
+
 /* Ask the OS for coordinates. Uses the native Geolocation plugin inside the
    phone app, the browser API on web; both go through the same save call. */
 async function requestLocation(done) {
   const finish = async (lat, lon, source) => {
+    const label = await reverseGeocode(lat, lon);
     try {
-      const data = await api("/location", { method: "POST", body: { lat, lon, source } });
-      toast(data.message);
+      const data = await api("/location", { method: "POST", body: { lat, lon, source, label } });
+      toast(label ? `📍 ${label.split(",")[0]} — weather nudges are on` : data.message);
     } catch (e) { toast(e.message); }
     if (done) done();
     await maybePromptForPush();
   };
 
+  toast("Finding your location…");
   const native = window.Capacitor?.Plugins?.Geolocation;
   if (native) {
     try {
-      const pos = await native.getCurrentPosition({ enableHighAccuracy: false, timeout: 12000 });
+      const pos = await native.getCurrentPosition({ enableHighAccuracy: true, timeout: 15000 });
       return finish(pos.coords.latitude, pos.coords.longitude, "device");
     } catch (_) {
       toast("Couldn't read your location — you can type your city instead.");
@@ -1438,13 +1581,18 @@ async function requestLocation(done) {
   navigator.geolocation.getCurrentPosition(
     (pos) => finish(pos.coords.latitude, pos.coords.longitude, "device"),
     () => { toast("Location permission declined — you can type your city instead."); cityPickerFlow(done); },
-    { enableHighAccuracy: false, timeout: 12000, maximumAge: 600000 });
+    /* high accuracy + a fresh fix: a cached coarse fix is what makes people
+       see the wrong city. Weather only needs ~1 km, but the FIX should be
+       real, not a stale IP-level guess. */
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
 }
 
 /* Manual fallback: search a city, pick from the matches. */
 function cityPickerFlow(done) {
   modal(`<h2>Which city are you in? 🏙️</h2>
-    <p class="muted small">Used only to look up the weather.</p>
+    <p class="muted small">Used only to look up the weather. Several places share
+    a name, so check the state and country before picking.</p>
+    <button class="btn btn-ghost btn-block" id="city-gps">📍 Use my exact location instead</button>
     <div class="field"><label for="city-q">City</label>
       <input id="city-q" placeholder="e.g. Kanpur" autocomplete="address-level2"></div>
     <button class="btn btn-primary btn-block" id="city-go">Search</button>
@@ -1454,6 +1602,10 @@ function cityPickerFlow(done) {
     const input = document.getElementById("city-q");
     const results = document.getElementById("city-results");
     input.focus();
+    document.getElementById("city-gps").onclick = () => {
+      document.querySelector(".modal-backdrop")?.remove();
+      requestLocation(done);
+    };
     const search = async () => {
       results.innerHTML = `<p class="muted small">Searching…</p>`;
       try {
@@ -1478,6 +1630,78 @@ function cityPickerFlow(done) {
     document.getElementById("city-go").onclick = search;
     input.onkeydown = (e) => { if (e.key === "Enter") search(); };
   }, 0);
+}
+
+/* Body basics: informational only. No targets, no weight-loss framing. */
+async function loadBodyBlock() {
+  const host = document.getElementById("body-block");
+  if (!host) return;
+  try {
+    const b = await api("/body");
+    host.innerHTML = `
+      <div class="body-grid">
+        <div class="body-cell"><strong>${b.age ?? "—"}</strong><span class="muted small">years</span></div>
+        <div class="body-cell"><strong>${b.height_cm ?? "—"}</strong><span class="muted small">cm</span></div>
+        <div class="body-cell"><strong>${b.weight_kg ?? "—"}</strong><span class="muted small">kg</span></div>
+      </div>
+      ${b.bmi ? `<p class="small section-gap">BMI <strong>${b.bmi}</strong> — ${esc(b.bmi_band)}.</p>
+                 <p class="muted small">${esc(b.note)}</p>`
+              : `<p class="muted small section-gap">Add height and weight to see your BMI. Entirely optional.</p>`}
+      <button class="btn btn-ghost btn-sm section-gap" id="body-edit">Update</button>`;
+    document.getElementById("body-edit").onclick = () => bodyEditModal(b);
+  } catch (_) { host.innerHTML = ""; }
+}
+
+function bodyEditModal(b) {
+  modal(`<h2>Body basics 📏</h2>
+    <p class="muted small">All optional — clear a field to remove it.</p>
+    <div class="field"><label for="be-dob">Date of birth</label>
+      <input id="be-dob" type="date" value="${b.dob || ""}" max="${new Date().toISOString().slice(0, 10)}"></div>
+    <div class="field"><label for="be-h">Height (cm)</label>
+      <input id="be-h" type="number" inputmode="decimal" value="${b.height_cm ?? ""}"></div>
+    <div class="field"><label for="be-w">Weight (kg)</label>
+      <input id="be-w" type="number" inputmode="decimal" value="${b.weight_kg ?? ""}"></div>
+    <p class="form-error" id="be-err" role="alert"></p>
+    <button class="btn btn-primary btn-block" id="be-save">Save</button>
+    <button class="btn btn-ghost btn-block section-gap" data-close>Cancel</button>`);
+  setTimeout(() => document.getElementById("be-save").onclick = async () => {
+    const err = document.getElementById("be-err");
+    err.textContent = "";
+    try {
+      const d = await api("/body", { method: "PATCH", body: {
+        dob: document.getElementById("be-dob").value || null,
+        height_cm: document.getElementById("be-h").value || null,
+        weight_kg: document.getElementById("be-w").value || null } });
+      document.querySelector(".modal-backdrop")?.remove();
+      toast(d.message);
+      views.profile();
+    } catch (e) { err.textContent = e.message; }
+  }, 0);
+}
+
+/* Everything the flash cards collected, with a delete-all control. */
+async function loadFlashcardAnswers() {
+  const host = document.getElementById("fc-answers");
+  if (!host) return;
+  try {
+    const { answers } = await api("/flashcard/answers");
+    if (!answers.length) {
+      host.innerHTML = `<p class="muted small">Nothing yet — HealthBuddy asks one small question every few days. Always skippable.</p>`;
+      return;
+    }
+    host.innerHTML = answers.map((a) => `
+      <div class="check-row"><span class="em">${a.emoji}</span>
+        <div class="grow"><strong class="small">${esc(a.q)}</strong>
+          <p class="muted small" style="margin:2px 0 0">${a.skipped ? "Skipped" : esc(a.answer)}</p></div>
+      </div>`).join("")
+      + `<p class="muted small section-gap">Private to you — never shown to buddies or used for ads.</p>
+         <button class="btn btn-ghost btn-sm" id="fc-clear">Delete these answers</button>`;
+    document.getElementById("fc-clear").onclick = async () => {
+      const { message } = await api("/flashcard/answers", { method: "DELETE" });
+      toast(message);
+      views.profile();
+    };
+  } catch (_) { host.innerHTML = ""; }
 }
 
 /* --- leaderboard: compete with buddies, or with everyone ------------------

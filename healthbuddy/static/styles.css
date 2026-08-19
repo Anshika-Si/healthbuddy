@@ -495,3 +495,14 @@ details.fold > .card { margin-top: 0; border-top-left-radius: 0; border-top-righ
 .weather-chip { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap;
   margin: 2px 0 10px; font: 700 14px var(--font-body); color: var(--text); }
 .weather-chip .muted { font-weight: 600; }
+
+/* ---------- flash cards ---------- */
+.flashcard { text-align: center; }
+.fc-emoji { font-size: 44px; margin-bottom: 6px; }
+.fc-options { display: grid; gap: 10px; margin-top: 16px; }
+.fc-options .btn { margin: 0; }
+
+/* ---------- body basics ---------- */
+.body-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
+.body-cell { background: var(--surface-2); border-radius: var(--r-sm); padding: 12px 10px; text-align: center; }
+.body-cell strong { display: block; font: 700 20px var(--font-display); }

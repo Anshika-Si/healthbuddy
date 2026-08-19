@@ -210,6 +210,15 @@ CREATE TABLE IF NOT EXISTS local_notification_events (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_local_notif_events_user ON local_notification_events(user_id, created_at);
+CREATE TABLE IF NOT EXISTS profile_answers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    question_id TEXT NOT NULL,
+    answer TEXT,
+    skipped INTEGER NOT NULL DEFAULT 0,
+    answered_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (user_id, question_id)
+);
 CREATE TABLE IF NOT EXISTS weather_cache (
     grid_key TEXT PRIMARY KEY,      -- coarse lat/lon cell, e.g. "26.4,80.3"
     payload TEXT NOT NULL,          -- JSON snapshot from the weather provider
@@ -436,6 +445,11 @@ MIGRATIONS = [
     ("users", "loc_label",   "ALTER TABLE users ADD COLUMN loc_label TEXT"),
     ("users", "loc_source",  "ALTER TABLE users ADD COLUMN loc_source TEXT"),
     ("users", "loc_updated_at", "ALTER TABLE users ADD COLUMN loc_updated_at TEXT"),
+    # Body basics — all optional. Used for age-aware copy and an informational
+    # BMI readout; never for weight-loss pressure or diet prescriptions.
+    ("users", "dob",        "ALTER TABLE users ADD COLUMN dob TEXT"),
+    ("users", "height_cm",  "ALTER TABLE users ADD COLUMN height_cm REAL"),
+    ("users", "weight_kg",  "ALTER TABLE users ADD COLUMN weight_kg REAL"),
 ]
 
 
