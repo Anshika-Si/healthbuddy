@@ -163,23 +163,68 @@ def get_location(user_id):
             "source": u["loc_source"], "updated_at": u["loc_updated_at"]}
 
 
-def search_city(name):
-    """Manual fallback: type a city, pick from matches. Works when a user
-    declines the OS permission but still wants weather nudges."""
+#: country_code (ISO-2) → flag emoji, so results are scannable at a glance
+def _flag(code):
+    if not code or len(code) != 2:
+        return "🌍"
+    return chr(0x1F1E6 + ord(code[0].upper()) - 65) + chr(0x1F1E6 + ord(code[1].upper()) - 65)
+
+
+def _pretty_population(n):
+    if not n:
+        return None
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M people"
+    if n >= 1000:
+        return f"{n // 1000}k people"
+    return f"{n} people"
+
+
+def search_city(name, country_hint=None):
+    """Manual fallback: type a city, pick from matches.
+
+    Ranked so the obvious answer is first. Open-Meteo returns every place
+    sharing a name (there's a 'Nepal' in Pakistan and in Indonesia), which
+    is what made the old list confusing, so results are:
+      * sorted by population — the big, likely-intended city floats up
+      * de-duplicated on (name, region, country)
+      * labelled with a flag, region, country AND population
+    """
     name = (name or "").strip()
     if len(name) < 2:
         return []
     try:
-        data = _http_json(GEOCODE_URL, {"name": name, "count": 5, "language": "en",
+        data = _http_json(GEOCODE_URL, {"name": name, "count": 20, "language": "en",
                                         "format": "json"})
     except Exception:
         return []
-    out = []
+
+    seen, out = set(), []
     for r in data.get("results") or []:
-        bits = [r.get("name"), r.get("admin1"), r.get("country")]
-        out.append({"label": ", ".join(b for b in bits if b),
-                    "lat": round(r["latitude"], 2), "lon": round(r["longitude"], 2)})
-    return out
+        key = (r.get("name"), r.get("admin1"), r.get("country_code"))
+        if key in seen:
+            continue
+        seen.add(key)
+        region = r.get("admin1")
+        country = r.get("country")
+        out.append({
+            "label": ", ".join(b for b in [r.get("name"), region, country] if b),
+            "name": r.get("name"),
+            "region": region,
+            "country": country,
+            "flag": _flag(r.get("country_code")),
+            "population": r.get("population") or 0,
+            "population_label": _pretty_population(r.get("population")),
+            "lat": round(r["latitude"], 2), "lon": round(r["longitude"], 2),
+        })
+
+    if country_hint:
+        hint = country_hint.strip().lower()
+        out.sort(key=lambda x: (0 if (x["country"] or "").lower() == hint else 1,
+                                -x["population"]))
+    else:
+        out.sort(key=lambda x: -x["population"])
+    return out[:6]
 
 
 # ------------------------------------------------------------------ for nudges

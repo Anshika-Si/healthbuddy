@@ -1252,7 +1252,8 @@ views.profile = async () => {
       </div>
     </div>
 
-    <button class="btn btn-ghost btn-block section-gap" id="signout">Sign out</button>`);
+    <button class="btn btn-ghost btn-block section-gap" id="signout">Sign out</button>
+    <button class="btn btn-link danger-link" id="delete-account">Delete my account</button>`);
 
   loadBodyBlock();
   loadFlashcardAnswers();
@@ -1280,6 +1281,7 @@ views.profile = async () => {
     views.profile();
   });
   document.getElementById("signout").onclick = logout;
+  document.getElementById("delete-account").onclick = deleteAccountFlow;
   $screen.querySelectorAll("[data-theme-set]").forEach((b) => b.onclick = () => {
     applyTheme(b.dataset.themeSet);
     toast(b.dataset.themeSet === "light" ? "Light theme on ☀️" : "Dark theme on 🌙");
@@ -1553,10 +1555,19 @@ async function reverseGeocode(lat, lon) {
   } catch (_) { return null; }
 }
 
-/* Ask the OS for coordinates. Uses the native Geolocation plugin inside the
-   phone app, the browser API on web; both go through the same save call. */
+/* Ask the OS for coordinates — the same way a maps app does.
+   ---------------------------------------------------------------------
+   Inside the APK we use the Capacitor Geolocation plugin, which talks to
+   Android's fused location provider (GPS + wifi + cell towers) and, more
+   importantly, can TRIGGER THE RUNTIME PERMISSION PROMPT. The browser's
+   navigator.geolocation can't request an Android permission by itself —
+   if the app was built without ACCESS_FINE_LOCATION it fails instantly
+   with "denied", which is exactly what a stale APK does.
+
+   Strategy: check permission → request it if needed → high-accuracy fix →
+   fall back to a coarser fix if that times out → last resort, type a city. */
 async function requestLocation(done) {
-  const finish = async (lat, lon, source) => {
+  const finish = async (lat, lon, source, accuracy) => {
     const label = await reverseGeocode(lat, lon);
     try {
       const data = await api("/location", { method: "POST", body: { lat, lon, source, label } });
@@ -1566,25 +1577,80 @@ async function requestLocation(done) {
     await maybePromptForPush();
   };
 
+  const geo = window.Capacitor?.Plugins?.Geolocation;
   toast("Finding your location…");
-  const native = window.Capacitor?.Plugins?.Geolocation;
-  if (native) {
+
+  /* ---------- native app: real OS permission flow ---------- */
+  if (geo) {
     try {
-      const pos = await native.getCurrentPosition({ enableHighAccuracy: true, timeout: 15000 });
-      return finish(pos.coords.latitude, pos.coords.longitude, "device");
-    } catch (_) {
-      toast("Couldn't read your location — you can type your city instead.");
+      let perm = await geo.checkPermissions();
+      if (perm.location !== "granted" && perm.coarseLocation !== "granted") {
+        perm = await geo.requestPermissions({ permissions: ["location", "coarseLocation"] });
+      }
+      if (perm.location === "denied" && perm.coarseLocation === "denied") {
+        return locationBlockedHelp(done, true);
+      }
+      let pos;
+      try {
+        pos = await geo.getCurrentPosition({ enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+      } catch (_) {
+        /* Indoors GPS often can't get a precise fix — a network-based one
+           is plenty for weather, so try that before giving up. */
+        pos = await geo.getCurrentPosition({ enableHighAccuracy: false, timeout: 20000, maximumAge: 300000 });
+      }
+      return finish(pos.coords.latitude, pos.coords.longitude, "device", pos.coords.accuracy);
+    } catch (e) {
+      const msg = String(e && e.message || "").toLowerCase();
+      if (msg.includes("denied") || msg.includes("permission")) return locationBlockedHelp(done, true);
+      toast("Couldn't get a location fix — try typing your city.");
       return cityPickerFlow(done);
     }
   }
+
+  /* ---------- website / PWA: browser geolocation ---------- */
   if (!navigator.geolocation) return cityPickerFlow(done);
-  navigator.geolocation.getCurrentPosition(
-    (pos) => finish(pos.coords.latitude, pos.coords.longitude, "device"),
-    () => { toast("Location permission declined — you can type your city instead."); cityPickerFlow(done); },
-    /* high accuracy + a fresh fix: a cached coarse fix is what makes people
-       see the wrong city. Weather only needs ~1 km, but the FIX should be
-       real, not a stale IP-level guess. */
-    { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
+  const tryBrowser = (highAccuracy) => new Promise((resolve, reject) =>
+    navigator.geolocation.getCurrentPosition(resolve, reject, {
+      enableHighAccuracy: highAccuracy,
+      timeout: highAccuracy ? 15000 : 20000,
+      maximumAge: highAccuracy ? 0 : 300000,
+    }));
+  try {
+    let pos;
+    try { pos = await tryBrowser(true); }
+    catch (err) {
+      if (err && err.code === 1) return locationBlockedHelp(done, false);   // PERMISSION_DENIED
+      pos = await tryBrowser(false);                                        // timeout → coarser
+    }
+    return finish(pos.coords.latitude, pos.coords.longitude, "device", pos.coords.accuracy);
+  } catch (err) {
+    if (err && err.code === 1) return locationBlockedHelp(done, false);
+    toast("Couldn't get a location fix — try typing your city.");
+    return cityPickerFlow(done);
+  }
+}
+
+/* Permission actually blocked: explain WHERE to fix it, instead of a
+   dead-end "declined" toast. */
+function locationBlockedHelp(done, isNative) {
+  modal(`<h2>Location is blocked 📍</h2>
+    <p class="muted small">Your phone's location may be on, but HealthBuddy
+    itself needs permission. ${isNative
+      ? "Open <strong>Settings → Apps → HealthBuddy → Permissions → Location</strong> and choose <em>Allow only while using the app</em>, then try again."
+      : "Tap the 🔒 icon next to the address bar → <strong>Site settings → Location → Allow</strong>, then reload and try again."}</p>
+    <button class="btn btn-primary btn-block section-gap" id="lb-retry">Try again</button>
+    <button class="btn btn-ghost btn-block" id="lb-city">Type my city instead</button>
+    <button class="btn btn-link" data-close>Not now</button>`);
+  setTimeout(() => {
+    document.getElementById("lb-retry").onclick = () => {
+      document.querySelector(".modal-backdrop")?.remove();
+      requestLocation(done);
+    };
+    document.getElementById("lb-city").onclick = () => {
+      document.querySelector(".modal-backdrop")?.remove();
+      cityPickerFlow(done);
+    };
+  }, 0);
 }
 
 /* Manual fallback: search a city, pick from the matches. */
@@ -1611,8 +1677,15 @@ function cityPickerFlow(done) {
       try {
         const { results: hits } = await api(`/location/search?q=${encodeURIComponent(input.value)}`);
         results.innerHTML = hits.length
-          ? hits.map((h) => `<button class="btn btn-ghost btn-block section-gap"
-               data-lat="${h.lat}" data-lon="${h.lon}" data-label="${esc(h.label)}">${esc(h.label)}</button>`).join("")
+          ? hits.map((h) => `
+              <button class="city-hit" data-lat="${h.lat}" data-lon="${h.lon}" data-label="${esc(h.label)}">
+                <span class="city-flag" aria-hidden="true">${h.flag}</span>
+                <span class="grow">
+                  <strong>${esc(h.name)}</strong>
+                  <span class="muted small">${esc([h.region, h.country].filter(Boolean).join(", "))}</span>
+                </span>
+                ${h.population_label ? `<span class="muted small">${esc(h.population_label)}</span>` : ""}
+              </button>`).join("")
           : `<p class="muted small">No matches — try a bigger nearby city.</p>`;
         results.querySelectorAll("[data-lat]").forEach((b) => b.onclick = async () => {
           try {
@@ -1629,6 +1702,47 @@ function cityPickerFlow(done) {
     };
     document.getElementById("city-go").onclick = search;
     input.onkeydown = (e) => { if (e.key === "Enter") search(); };
+  }, 0);
+}
+
+/* Account deletion: irreversible, so the dialog says exactly what goes,
+   requires the password, and makes the user type DELETE. Frees the email
+   immediately for a fresh sign-up. */
+async function deleteAccountFlow() {
+  let preview = { items: [] };
+  try { preview = await api("/account/deletion-preview"); } catch (_) {}
+  const list = preview.items.length
+    ? `<ul class="del-list">${preview.items.map((i) =>
+        `<li>${i.count} ${esc(i.what)}</li>`).join("")}</ul>`
+    : `<p class="muted small">There's not much stored yet.</p>`;
+  modal(`<h2>Delete your account?</h2>
+    <p class="muted small">This permanently erases:</p>
+    ${list}
+    <p class="muted small">Your email is freed straight away, so you can sign up
+    fresh with it. This can't be undone — there's no restore.</p>
+    <div class="field"><label for="da-pass">Your password</label>
+      <input id="da-pass" type="password" autocomplete="current-password"></div>
+    <div class="field"><label for="da-confirm">Type DELETE to confirm</label>
+      <input id="da-confirm" placeholder="DELETE" autocapitalize="characters"></div>
+    <p class="form-error" id="da-err" role="alert"></p>
+    <button class="btn btn-danger btn-block" id="da-go">Delete permanently</button>
+    <button class="btn btn-ghost btn-block section-gap" data-close>Keep my account</button>`);
+  setTimeout(() => document.getElementById("da-go").onclick = async () => {
+    const err = document.getElementById("da-err");
+    err.textContent = "";
+    if (document.getElementById("da-confirm").value.trim().toUpperCase() !== "DELETE") {
+      err.textContent = "Type DELETE in the box to confirm.";
+      return;
+    }
+    try {
+      const d = await api("/account", { method: "DELETE", body: {
+        password: document.getElementById("da-pass").value } });
+      document.querySelector(".modal-backdrop")?.remove();
+      toast(d.message);
+      state.token = null; state.refreshToken = null; state.user = null;
+      try { localStorage.clear(); } catch (_) {}
+      go("welcome");
+    } catch (e) { err.textContent = e.message; }
   }, 0);
 }
 

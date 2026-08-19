@@ -199,3 +199,46 @@ class LocationTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CitySearchRankingTestCase(LocationTestCase):
+    """The 'Nepal, Nepal / Nepal, Pakistan' confusion: results must be ranked
+    so the obviously-intended place is first, and labelled well enough to
+    tell the rest apart."""
+
+    RAW = {"results": [
+        {"name": "Nepal", "admin1": "Punjab", "country": "Pakistan",
+         "country_code": "PK", "population": 1200, "latitude": 32.1, "longitude": 73.0},
+        {"name": "Nepal", "admin1": "Central Java", "country": "Indonesia",
+         "country_code": "ID", "population": 5000, "latitude": -7.0, "longitude": 110.0},
+        {"name": "Kathmandu", "admin1": "Bagmati", "country": "Nepal",
+         "country_code": "NP", "population": 1442271, "latitude": 27.7, "longitude": 85.3},
+        # duplicate of the first — must be collapsed
+        {"name": "Nepal", "admin1": "Punjab", "country": "Pakistan",
+         "country_code": "PK", "population": 1200, "latitude": 32.1, "longitude": 73.0},
+    ]}
+
+    def test_results_are_ranked_deduped_and_labelled(self):
+        with self.app.app_context():
+            with mock.patch.object(weather_svc, "_http_json", return_value=self.RAW):
+                hits = weather_svc.search_city("nepal")
+        self.assertEqual(len(hits), 3)                     # duplicate collapsed
+        self.assertEqual(hits[0]["name"], "Kathmandu")     # biggest first
+        self.assertEqual(hits[0]["flag"], "🇳🇵")
+        self.assertEqual(hits[0]["population_label"], "1.4M people")
+        # every result still says which country it's in
+        for h in hits:
+            self.assertTrue(h["country"])
+            self.assertIn(h["country"], h["label"])
+
+    def test_country_hint_floats_the_right_country_up(self):
+        with self.app.app_context():
+            with mock.patch.object(weather_svc, "_http_json", return_value=self.RAW):
+                hits = weather_svc.search_city("nepal", country_hint="Pakistan")
+        self.assertEqual(hits[0]["country"], "Pakistan")
+
+    def test_short_queries_do_not_hit_the_api(self):
+        with self.app.app_context():
+            with mock.patch.object(weather_svc, "_http_json") as m:
+                self.assertEqual(weather_svc.search_city("k"), [])
+                m.assert_not_called()

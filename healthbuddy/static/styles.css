@@ -506,3 +506,17 @@ details.fold > .card { margin-top: 0; border-top-left-radius: 0; border-top-righ
 .body-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 12px; }
 .body-cell { background: var(--surface-2); border-radius: var(--r-sm); padding: 12px 10px; text-align: center; }
 .body-cell strong { display: block; font: 700 20px var(--font-display); }
+
+/* ---------- city picker results ---------- */
+.city-hit { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left;
+  background: var(--surface-2); border: 1.5px solid var(--line); border-radius: var(--r-sm);
+  padding: 12px 14px; margin-top: 10px; color: var(--text); }
+.city-hit .grow { display: flex; flex-direction: column; gap: 1px; flex: 1; }
+.city-hit .city-flag { font-size: 22px; }
+.city-hit:active { transform: scale(.99); }
+
+/* ---------- destructive actions ---------- */
+.danger-link { color: var(--danger); display: block; margin: 4px auto 0; }
+.btn-danger { background: var(--danger); color: #fff; border: none; }
+.del-list { margin: 8px 0 12px 18px; color: var(--muted); font-size: 13px; }
+.del-list li { margin: 3px 0; }

@@ -171,3 +171,76 @@ def _row(h, w, dob):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AccountDeletionTestCase(BodyAndCardsTestCase):
+    """Deleting an account must be complete — and must free the email."""
+
+    def _populate(self, h):
+        self.client.post("/api/logs", headers=h, json={"type": "water", "value": 1})
+        self.client.post("/api/flashcard", headers=h,
+                         json={"question_id": "conditions", "answer": "Asthma / breathing"})
+        self.client.post("/api/location", headers=h, json={"lat": 26.45, "lon": 80.33})
+        self.client.post("/api/activity/manual", headers=h, json={"steps": 4000})
+        self.client.patch("/api/body", headers=h, json={"height_cm": 165, "weight_kg": 58})
+
+    def test_delete_removes_every_trace_and_frees_the_email(self):
+        h = self.auth("gone@example.com")
+        self._populate(h)
+        with self.app.app_context():
+            uid = query("SELECT id FROM users WHERE email='gone@example.com'", one=True)["id"]
+
+        res = self.client.delete("/api/account", headers=h, json={"password": "password123"})
+        self.assertEqual(res.status_code, 200, res.get_json())
+
+        with self.app.app_context():
+            from healthbuddy.services.account import _tables_with_user_id
+            self.assertIsNone(query("SELECT 1 FROM users WHERE id=?", (uid,), one=True))
+            for table in _tables_with_user_id():
+                left = query(f"SELECT COUNT(*) AS n FROM {table} WHERE user_id=?", (uid,), one=True)["n"]
+                self.assertEqual(left, 0, f"{table} still holds data for the deleted user")
+            self.assertIsNone(query("SELECT 1 FROM email_otps WHERE email='gone@example.com'", one=True))
+
+        # the whole point: sign up again with the same email
+        again = self.client.post("/api/auth/register",
+                                 json={"email": "gone@example.com", "name": "Fresh",
+                                       "password": "password123"})
+        self.assertEqual(again.status_code, 200)
+        verified = self.client.post("/api/auth/register/verify",
+                                    json={"email": "gone@example.com",
+                                          "code": again.get_json()["dev_code"]})
+        self.assertEqual(verified.status_code, 201)
+        self.assertEqual(verified.get_json()["user"]["name"], "Fresh")
+
+    def test_wrong_password_deletes_nothing(self):
+        h = self.auth("safe@example.com")
+        self._populate(h)
+        res = self.client.delete("/api/account", headers=h, json={"password": "wrongwrong"})
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(self.client.get("/api/dashboard", headers=h).status_code, 200)
+
+    def test_old_session_stops_working_after_deletion(self):
+        h = self.auth("bye@example.com")
+        self.client.delete("/api/account", headers=h, json={"password": "password123"})
+        self.assertEqual(self.client.get("/api/dashboard", headers=h).status_code, 401)
+
+    def test_buddy_links_pointing_at_the_deleted_user_are_cleaned_up(self):
+        me = self.auth("stay@example.com")
+        them = self.auth("leaving@example.com")
+        code = self.client.get("/api/buddies", headers=them).get_json()["my_code"]
+        self.client.post("/api/buddies/link", headers=me, json={"code": code})
+        self.client.delete("/api/account", headers=them, json={"password": "password123"})
+        # the remaining user's buddy list must not reference a ghost
+        buds = self.client.get("/api/buddies", headers=me).get_json()["buddies"]
+        self.assertEqual(buds, [])
+        self.assertEqual(self.client.get("/api/leaderboard?scope=buddies", headers=me).status_code, 200)
+
+    def test_deletion_covers_new_tables_automatically(self):
+        """The table list is derived from the schema, so a future table with a
+        user_id column is covered without anyone remembering to update it."""
+        with self.app.app_context():
+            from healthbuddy.services.account import _tables_with_user_id
+            covered = set(_tables_with_user_id())
+        for expected in ("habit_logs", "profile_answers", "activity_daily",
+                         "cycle_settings", "game_scores", "sessions"):
+            self.assertIn(expected, covered)

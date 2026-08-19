@@ -497,3 +497,29 @@ def patch_body():
     from ..db import query as q
     return jsonify(message="Saved ✨",
                    **body_svc.summary(q("SELECT * FROM users WHERE id=?", (g.user["id"],), one=True)))
+
+
+# ---------------- Account deletion ----------------
+@bp.get("/account/deletion-preview")
+@require_auth
+def account_deletion_preview():
+    """What would be erased — shown before the user confirms."""
+    from ..services import account
+    return jsonify(**account.preview(g.user["id"]))
+
+
+@bp.delete("/account")
+@require_auth
+def delete_account():
+    """Permanently delete the account and every trace of its data. The email
+    becomes immediately available for a fresh sign-up."""
+    from ..services import account
+    b = body()
+    try:
+        email = account.delete_account(g.user["id"], b.get("password"))
+    except PermissionError as e:
+        return jsonify(error=str(e)), 403
+    except LookupError as e:
+        return jsonify(error=str(e)), 404
+    return jsonify(ok=True, email=email,
+                   message="Account deleted. You can sign up again with that email whenever you like.")
