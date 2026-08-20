@@ -51,11 +51,11 @@ jobs:
           # Capacitor wants to generate a folder with that same name — so we
           # set the sources aside first, then generate, then copy them in.
           mv android plugin-src
+          # @capacitor/geolocation is pinned in package.json at the same major
+          # as @capacitor/core (6.x). Installing "latest" pulls 7.x, whose peer
+          # dependency on core@^7 makes npm fail with ERESOLVE — which is what
+          # broke the previous build.
           npm install
-          # Geolocation plugin: gives the app the SAME OS location service
-          # Google Maps uses (GPS + wifi + cell fusion) and, crucially, the
-          # runtime permission prompt. Browser geolocation alone can't ask.
-          npm install @capacitor/geolocation
           npx cap add android
 
       - name: Install the HealthBuddy sensor plugins
