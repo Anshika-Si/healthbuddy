@@ -594,9 +594,8 @@ async function loadPermissionsCenter(gender, cycleEnabled) {
         <span class="em" aria-hidden="true">📍</span>
         <div class="grow"><strong>Location</strong>
           ${location ? `<span class="chip done">On</span>` : `<span class="chip">Off</span>`}
-          <p class="muted small">Weather-aware nudges — rain alerts, heat hydration reminders,
-          "nice evening for a walk". Stored to about a kilometre, never shared with buddies.
-          ${location && location.label ? `Currently: ${esc(location.label)}.` : ""}</p></div>
+          <p class="muted small">Weather-aware nudges. ${location && location.label
+            ? `Currently: ${esc(location.label)}.` : "City-level only."}</p></div>
         ${location ? `<button class="btn btn-ghost btn-sm" data-loc="off">Delete</button>`
                    : `<button class="btn btn-ghost btn-sm" data-loc="on">Turn on</button>`}
       </div>`;
@@ -605,7 +604,7 @@ async function loadPermissionsCenter(gender, cycleEnabled) {
     document.getElementById("signout")?.insertAdjacentHTML("beforebegin",
       `<h2 class="section-gap">Data & Permissions 🔒</h2>
        <div class="card">
-         <p class="muted small">HealthBuddy only uses data you explicitly share, only to personalize your nudges. Nothing here is ever visible to buddies or leaderboards.</p>
+         <p class="muted small">Only used to personalize nudges. Never shown to buddies.</p>
          ${rows}${locRow}
          ${SHOW_DEVICE_DIAGNOSTIC ? `<p class="muted small" style="margin-top:10px">${deviceDiagnostic()}</p>` : ""}
        </div>`);

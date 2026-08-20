@@ -24,13 +24,13 @@ from ..db import query, execute
 
 INTEGRATIONS = {
     "activity":   {"label": "Activity / Steps", "emoji": "🚶",
-                   "why": "Step count lets HealthBuddy skip movement reminders you've already earned, and cheer at the right moments."},
+                   "why": "Skip walk reminders you've already earned."},
     "screen_time": {"label": "Screen Time", "emoji": "📱",
-                    "why": "Screen-time awareness powers gentle look-away and wind-down nudges. Never judgement, just nudges."},
+                    "why": "Gentle look-away and wind-down nudges."},
     "notifications": {"label": "Notifications", "emoji": "🔔",
-                      "why": "Lets HealthBuddy actually reach you with its (respectfully rationed) personality."},
+                      "why": "So nudges can actually reach you."},
     "period_care": {"label": "Period Care", "emoji": "🌸",
-                    "why": "Cycle predictions and supportive phase-aware reminders. Private by default, deletable anytime."},
+                    "why": "Cycle predictions and phase-aware reminders."},
 }
 VALID_SOURCES = {"health_connect", "healthkit", "device_sensor", "android_usage", "manual", "web", "other"}
 

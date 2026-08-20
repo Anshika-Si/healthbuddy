@@ -1519,6 +1519,53 @@ views.location_ask = () => {
   };
 };
 
+/* Approximate location from the network connection — no permission needed.
+   BigDataCloud's client endpoint falls back to IP-based lookup when it's
+   called without coordinates, returning a city and its coordinates. That's
+   city-level accuracy, which is all the weather actually needs, and it means
+   location works even when GPS is unavailable or the permission is refused.
+   (On mobile data it can point at the carrier's gateway city, so the user is
+   always shown what we detected and can correct it.) */
+async function approximateLocation() {
+  try {
+    const r = await fetch("https://api.bigdatacloud.net/data/reverse-geocode-client?localityLanguage=en");
+    if (!r.ok) return null;
+    const d = await r.json();
+    if (!d.latitude || !d.longitude) return null;
+    return {
+      lat: +Number(d.latitude).toFixed(2),
+      lon: +Number(d.longitude).toFixed(2),
+      label: [d.city || d.locality, d.principalSubdivision, d.countryName].filter(Boolean).join(", "),
+    };
+  } catch (_) { return null; }
+}
+
+/* Offer the network fallback whenever the precise path can't run. */
+async function offerApproximateLocation(done, reason) {
+  const guess = await approximateLocation();
+  if (!guess || !guess.label) return cityPickerFlow(done);
+  modal(`<h2>Is this right? 📍</h2>
+    <p class="muted small">${esc(reason)}</p>
+    <div class="card" style="text-align:center"><strong>${esc(guess.label)}</strong></div>
+    <button class="btn btn-primary btn-block section-gap" id="ap-yes">Yes, use this</button>
+    <button class="btn btn-ghost btn-block" id="ap-no">No, type my city</button>`);
+  setTimeout(() => {
+    document.getElementById("ap-yes").onclick = async () => {
+      try {
+        await api("/location", { method: "POST", body: {
+          lat: guess.lat, lon: guess.lon, label: guess.label, source: "network" } });
+        document.querySelector(".modal-backdrop")?.remove();
+        toast(`📍 ${guess.label.split(",")[0]} — weather nudges are on`);
+        if (done) done();
+      } catch (e) { toast(e.message); }
+    };
+    document.getElementById("ap-no").onclick = () => {
+      document.querySelector(".modal-backdrop")?.remove();
+      cityPickerFlow(done);
+    };
+  }, 0);
+}
+
 /* Turn GPS coordinates into a real place name.
    Uses BigDataCloud's free client-side reverse-geocoding endpoint (no API
    key; their fair-use policy requires the call to come from the device, so
@@ -1590,24 +1637,16 @@ async function requestLocation(done) {
       if (msg.includes("denied") || msg.includes("permission")) return locationBlockedHelp(done, true);
       if (msg.includes("not implemented") || msg.includes("unimplemented"))
         return locationBlockedHelp(done, true);
-      toast("Couldn't get a location fix — try typing your city.");
-      return cityPickerFlow(done);
+      return offerApproximateLocation(done, "GPS didn't respond, so this is from your network.");
     }
   }
 
   /* Native shell but no Geolocation plugin = the APK was built without it.
      Say so plainly instead of showing browser instructions that can't help. */
   if (isNativeApp && !geo) {
-    modal(`<h2>Location needs a newer app 📍</h2>
-      <p class="muted small">This build doesn't include the location component yet.
-      Install the latest HealthBuddy APK and it'll work. Meanwhile you can type your city.</p>
-      <button class="btn btn-primary btn-block section-gap" id="ln-city">Type my city</button>
-      <button class="btn btn-ghost btn-block" data-close>Close</button>`);
-    setTimeout(() => document.getElementById("ln-city").onclick = () => {
-      document.querySelector(".modal-backdrop")?.remove();
-      cityPickerFlow(done);
-    }, 0);
-    return;
+    /* This APK was built without the GPS component. Rather than a dead end,
+       fall back to network location — city-level, no permission required. */
+    return offerApproximateLocation(done, "We detected this from your network connection.");
   }
 
   /* ---------- website / PWA: browser geolocation ---------- */
@@ -1628,8 +1667,7 @@ async function requestLocation(done) {
     return finish(pos.coords.latitude, pos.coords.longitude, "device", pos.coords.accuracy);
   } catch (err) {
     if (err && err.code === 1) return locationBlockedHelp(done, !!window.Capacitor);
-    toast("Couldn't get a location fix — try typing your city.");
-    return cityPickerFlow(done);
+    return offerApproximateLocation(done, "GPS didn't respond, so this is from your network.");
   }
 }
 
@@ -1641,12 +1679,17 @@ function locationBlockedHelp(done, isNative) {
       ? "Settings → Apps → HealthBuddy → Permissions → Location → <strong>Allow</strong>"
       : "Tap 🔒 in the address bar → Site settings → Location → <strong>Allow</strong>"}</p>
     <button class="btn btn-primary btn-block section-gap" id="lb-retry">Try again</button>
+    <button class="btn btn-ghost btn-block" id="lb-approx">Use approximate location</button>
     <button class="btn btn-ghost btn-block" id="lb-city">Type my city instead</button>
     <button class="btn btn-link" data-close>Not now</button>`);
   setTimeout(() => {
     document.getElementById("lb-retry").onclick = () => {
       document.querySelector(".modal-backdrop")?.remove();
       requestLocation(done);
+    };
+    document.getElementById("lb-approx").onclick = () => {
+      document.querySelector(".modal-backdrop")?.remove();
+      offerApproximateLocation(done, "Approximate, from your network connection.");
     };
     document.getElementById("lb-city").onclick = () => {
       document.querySelector(".modal-backdrop")?.remove();

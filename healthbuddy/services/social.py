@@ -1,11 +1,19 @@
 """Challenges, leaderboards, and the buddy system."""
-from datetime import date
+from datetime import date, timedelta
 from ..db import query, execute
 from . import gamification
 
 
 def _progress(user_id, ch):
-    if ch["metric_type"] == "nudge_acted":
+    if ch["metric_type"] == "steps_goal":
+        # days the user met their OWN step goal — fair for everyone,
+        # whatever goal they set for themselves
+        row = query("""SELECT COUNT(*) AS n FROM activity_daily a
+                       JOIN users u ON u.id = a.user_id
+                       WHERE a.user_id=? AND a.date BETWEEN ? AND ?
+                         AND a.steps >= COALESCE(u.step_goal, 8000)""",
+                    (user_id, ch["starts_on"], ch["ends_on"]), one=True)
+    elif ch["metric_type"] == "nudge_acted":
         row = query("SELECT COUNT(*) AS n FROM interaction_logs WHERE user_id=? AND action='acted' "
                     "AND date(created_at) BETWEEN ? AND ?",
                     (user_id, ch["starts_on"], ch["ends_on"]), one=True)
@@ -16,7 +24,39 @@ def _progress(user_id, ch):
     return min(row["n"], ch["target"])
 
 
+#: The standing rotation. When every challenge has expired, a fresh
+#: fortnight is started automatically — otherwise the tab goes empty a
+#: fortnight after launch and nobody notices until a user complains.
+DEFAULT_CHALLENGES = [
+    ("Hydration Week", "Log water on 7 different days in the next two weeks. Your kidneys are cheering.",
+     "💧", "water", 7),
+    ("Nudge Streak", "Act on 15 nudges before the challenge ends. Small actions, big momentum.",
+     "⚡", "nudge_acted", 15),
+    ("Sleep Squad", "Log your sleep on 5 different days. Consistency beats heroics.",
+     "🌙", "sleep", 5),
+    ("Step It Up", "Hit your own step goal on 5 days. Your goal, your pace.",
+     "🚶", "steps_goal", 5),
+]
+
+
+def ensure_active_challenges():
+    """Guarantee the Challenges tab is never empty. If nothing is live, start
+    a new 14-day cycle. Old rows are left alone so past progress stays intact."""
+    today = date.today()
+    live = query("SELECT COUNT(*) AS n FROM challenges WHERE ends_on >= ?",
+                 (today.isoformat(),), one=True)["n"]
+    if live:
+        return 0
+    ends = (today + timedelta(days=14)).isoformat()
+    for title, desc, emoji, metric, target in DEFAULT_CHALLENGES:
+        execute("""INSERT INTO challenges (title, description, emoji, metric_type,
+                   target, starts_on, ends_on) VALUES (?,?,?,?,?,?,?)""",
+                (title, desc, emoji, metric, target, today.isoformat(), ends))
+    return len(DEFAULT_CHALLENGES)
+
+
 def list_challenges(user_id):
+    ensure_active_challenges()
     today = date.today().isoformat()
     rows = query("SELECT * FROM challenges WHERE ends_on >= ? ORDER BY starts_on", (today,))
     joined = {r["challenge_id"] for r in

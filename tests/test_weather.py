@@ -7,7 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import date, datetime
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -242,3 +242,44 @@ class CitySearchRankingTestCase(LocationTestCase):
             with mock.patch.object(weather_svc, "_http_json") as m:
                 self.assertEqual(weather_svc.search_city("k"), [])
                 m.assert_not_called()
+
+
+class ChallengeRotationTestCase(LocationTestCase):
+    """The Challenges tab went empty once the seeded fortnight expired.
+    It must refill itself rather than silently showing nothing."""
+
+    def test_expired_challenges_are_replaced_automatically(self):
+        from healthbuddy.db import execute, query as q
+        h = self.auth("ch@example.com")
+        with self.app.app_context():
+            execute("DELETE FROM challenges")
+            execute("""INSERT INTO challenges (title, description, emoji, metric_type,
+                       target, starts_on, ends_on) VALUES (?,?,?,?,?,?,?)""",
+                    ("Old", "expired", "💧", "water", 7, "2026-07-01", "2026-07-15"))
+        live = self.client.get("/api/challenges", headers=h).get_json()["challenges"]
+        self.assertGreaterEqual(len(live), 3)
+        for c in live:
+            self.assertGreaterEqual(c["ends_on"], date.today().isoformat())
+
+    def test_rotation_does_not_duplicate_while_challenges_are_live(self):
+        h = self.auth("ch2@example.com")
+        first = self.client.get("/api/challenges", headers=h).get_json()["challenges"]
+        second = self.client.get("/api/challenges", headers=h).get_json()["challenges"]
+        self.assertEqual(len(first), len(second))
+
+    def test_step_goal_challenge_counts_days_over_the_users_own_goal(self):
+        from healthbuddy.db import execute
+        h = self.auth("ch3@example.com")
+        self.client.patch("/api/profile", headers=h, json={"step_goal": 5000})
+        chs = self.client.get("/api/challenges", headers=h).get_json()["challenges"]
+        steps_ch = next(c for c in chs if c["metric_type"] == "steps_goal")
+        self.client.post(f"/api/challenges/{steps_ch['id']}/join", headers=h)
+        self.client.post("/api/activity/manual", headers=h, json={"steps": 7000})   # over goal
+        after = next(c for c in self.client.get("/api/challenges", headers=h).get_json()["challenges"]
+                     if c["id"] == steps_ch["id"])
+        self.assertEqual(after["progress"], 1)
+        with self.app.app_context():   # a day under the goal must not count
+            execute("""UPDATE activity_daily SET steps=1000 WHERE user_id=1""")
+        after = next(c for c in self.client.get("/api/challenges", headers=h).get_json()["challenges"]
+                     if c["id"] == steps_ch["id"])
+        self.assertEqual(after["progress"], 0)
