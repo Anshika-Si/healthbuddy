@@ -52,6 +52,10 @@ jobs:
           # set the sources aside first, then generate, then copy them in.
           mv android plugin-src
           npm install
+          # Geolocation plugin: gives the app the SAME OS location service
+          # Google Maps uses (GPS + wifi + cell fusion) and, crucially, the
+          # runtime permission prompt. Browser geolocation alone can't ask.
+          npm install @capacitor/geolocation
           npx cap add android
 
       - name: Install the HealthBuddy sensor plugins
@@ -73,6 +77,14 @@ jobs:
               s = s.replace("</manifest>",
                   '    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />\n'
                   '    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />\n'
+                  '</manifest>')
+          if "ACCESS_FINE_LOCATION" not in s:
+              # Without these declared, the WebView's geolocation call fails
+              # INSTANTLY with "permission denied" — the OS never even shows
+              # a prompt. This is why location appeared broken on device.
+              s = s.replace("</manifest>",
+                  '    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n'
+                  '    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n'
                   '</manifest>')
           if "POST_NOTIFICATIONS" not in s:
               # Required on Android 13+ (API 33+) — without this declared,
@@ -101,6 +113,13 @@ jobs:
           test -f android/app/src/main/java/app/healthbuddy/StepsPlugin.java || { echo "::error::StepsPlugin.java missing from the Android project"; exit 1; }
           grep -q "ACTIVITY_RECOGNITION" android/app/src/main/AndroidManifest.xml || { echo "::error::Manifest permissions were not added"; exit 1; }
           grep -q "POST_NOTIFICATIONS" android/app/src/main/AndroidManifest.xml || { echo "::error::POST_NOTIFICATIONS permission missing — notifications will silently fail on Android 13+"; exit 1; }
+          grep -q "ACCESS_FINE_LOCATION" android/app/src/main/AndroidManifest.xml || { echo "::error::Location permission missing — GPS will report 'permission denied' on device"; exit 1; }
+          # The plugin must be linked into the Android project, not just npm-installed,
+          # or the app silently falls back to browser geolocation (which can't work).
+          grep -q "geolocation" android/app/src/main/assets/capacitor.plugins.json 2>/dev/null \
+            || grep -rq "GeolocationPlugin" android/capacitor-cordova-android-plugins android/app/src/main/java 2>/dev/null \
+            || grep -q "@capacitor/geolocation" android/app/capacitor.build.gradle 2>/dev/null \
+            || { echo "::error::@capacitor/geolocation not linked into the Android build"; exit 1; }
           echo "assembly verified: screens bundled, plugins present, permissions set"
 
       - name: Apply the HealthBuddy app icon
