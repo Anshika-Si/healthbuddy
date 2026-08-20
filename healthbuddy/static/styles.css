@@ -520,3 +520,18 @@ details.fold > .card { margin-top: 0; border-top-left-radius: 0; border-top-righ
 .btn-danger { background: var(--danger); color: #fff; border: none; }
 .del-list { margin: 8px 0 12px 18px; color: var(--muted); font-size: 13px; }
 .del-list li { margin: 3px 0; }
+
+/* ---------- BMI scale ---------- */
+.bmi-head { display: flex; align-items: baseline; gap: 8px; margin-top: 14px; }
+.bmi-head strong { font: 700 20px var(--font-display); }
+.bmi-scale { margin: 10px 0 6px; }
+.bmi-bar { position: relative; display: flex; height: 10px; border-radius: 99px; overflow: visible; }
+.bmi-bar > span { height: 10px; }
+.bmi-bar .b1 { background: #6FA8DC; border-radius: 99px 0 0 99px; }
+.bmi-bar .b2 { background: #7ED957; }
+.bmi-bar .b3 { background: #FFD166; }
+.bmi-bar .b4 { background: #FF8A5C; border-radius: 0 99px 99px 0; }
+.bmi-marker { position: absolute; top: -5px; width: 4px; height: 20px; border-radius: 99px;
+  background: var(--text); box-shadow: 0 0 0 2px var(--surface); transform: translateX(-2px); }
+.bmi-ticks { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted);
+  padding: 4px 12% 0 8%; }

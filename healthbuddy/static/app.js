@@ -688,8 +688,8 @@ const OB_STEPS = [
     ["nonbinary", "🧑", "Non-binary"], ["prefer_not", "🤐", "Prefer not to say"]] },
   /* Body basics — every field optional. Skipping costs nothing; we only use
      these for age-aware wording and an informational BMI readout. */
-  { key: "body", fields: true, q: "A few basics (all optional)",
-    hint: "Only used for gentler, better-timed nudges — and an informational BMI. Leave anything blank." },
+  { key: "body", fields: true, q: "A few basics",
+    hint: "For age-aware nudges and your BMI." },
 ];
 
 views.onboarding = () => {
@@ -724,7 +724,6 @@ views.onboarding = () => {
             <input id="ob-height" type="number" inputmode="decimal" min="60" max="250" placeholder="e.g. 165"></div>
           <div class="field"><label for="ob-weight">Weight (kg)</label>
             <input id="ob-weight" type="number" inputmode="decimal" min="20" max="300" placeholder="e.g. 58"></div>
-          <p class="muted small">We show BMI as context, never a target — and there are no weight-loss nudges in this app.</p>
           <p class="form-error" id="ob-err" role="alert"></p>
         </div>` : ""}
         <div class="choice-grid">
@@ -733,31 +732,23 @@ views.onboarding = () => {
                <span class="em" aria-hidden="true">${em}</span>${label}</button>`).join("")}
         </div>
         ${s.multi ? `<button class="btn btn-primary btn-block section-gap" id="ob-next" disabled>Continue</button>` : ""}
-        ${s.fields ? `<button class="btn btn-primary btn-block section-gap" id="ob-next">Continue</button>
-          <button class="btn btn-link" id="ob-skip">Skip this</button>` : ""}
+        ${s.fields ? `<button class="btn btn-primary btn-block section-gap" id="ob-next">Continue</button>` : ""}
         <p class="muted small">Your answers set your starting nudges. HealthBuddy keeps learning from what you actually do.</p>
       </div>`);
     if (s.fields) {
-      const save = async (skip) => {
+      const save = async () => {
         const err = document.getElementById("ob-err");
         err.textContent = "";
-        if (!skip) {
-          const payload = {};
-          const dob = document.getElementById("ob-dob").value;
-          const h = document.getElementById("ob-height").value;
-          const w = document.getElementById("ob-weight").value;
-          if (dob) payload.dob = dob;
-          if (h) payload.height_cm = +h;
-          if (w) payload.weight_kg = +w;
-          if (Object.keys(payload).length) {
-            try { await api("/body", { method: "PATCH", body: payload }); }
-            catch (e) { err.textContent = e.message; return; }
-          }
-        }
+        const dob = document.getElementById("ob-dob").value;
+        const h = document.getElementById("ob-height").value;
+        const w = document.getElementById("ob-weight").value;
+        if (!dob || !h || !w) { err.textContent = "Please fill all three."; return; }
+        try { await api("/body", { method: "PATCH", body: {
+          dob, height_cm: +h, weight_kg: +w } }); }
+        catch (e) { err.textContent = e.message; return; }
         advance();
       };
-      document.getElementById("ob-next").onclick = () => save(false);
-      document.getElementById("ob-skip").onclick = () => save(true);
+      document.getElementById("ob-next").onclick = save;
       return;
     }
     if (s.multi) {
@@ -1423,10 +1414,8 @@ async function maybeAskLocation() {
     if (location) { localStorage.setItem("hb_loc_prompted", "1"); return; }
     localStorage.setItem("hb_loc_prompted", "1");
     setTimeout(() => modal(`<h2>🌦️ Weather-smart nudges?</h2>
-      <p class="muted small">Share your rough location and HealthBuddy can time
-      nudges to the actual weather — rain alerts, heat hydration reminders,
-      "perfect evening for a walk". Stored to about a kilometre, never shared,
-      delete it any time.</p>
+      <p class="muted small">So nudges know when it's raining or too hot.
+      City-level only, never shared.</p>
       <button class="btn btn-primary btn-block section-gap" id="ml-allow">Use my location</button>
       <button class="btn btn-ghost btn-block" id="ml-city">Type my city</button>
       <button class="btn btn-link" data-close>Not now</button>`), 900);
@@ -1496,9 +1485,11 @@ async function loadWeatherChip() {
     const h1 = $screen.querySelector("h1");
     if (!h1) return;
     const place = location && location.label ? esc(location.label.split(",")[0]) : "";
+    const feels = weather.feels_like != null && Math.abs(weather.feels_like - weather.temp) >= 2
+      ? ` (feels ${Math.round(weather.feels_like)}°)` : "";
     h1.insertAdjacentHTML("afterend",
-      `<p class="weather-chip">${weather.emoji} ${Math.round(weather.temp)}°C · ${esc(weather.label)}${place ? ` · ${place}` : ""}
-       <span class="muted small">${weather.rain_chance != null ? `· ${weather.rain_chance}% rain today` : ""}</span></p>`);
+      `<p class="weather-chip">${weather.emoji} ${Math.round(weather.temp)}°C${feels} · ${esc(weather.label)}${place ? ` · ${place}` : ""}
+       <span class="muted small">${weather.rain_chance != null ? `· ${weather.rain_chance}% rain` : ""}</span></p>`);
   } catch (_) { /* weather is decoration on Home; never load-bearing */ }
 }
 
@@ -1510,30 +1501,19 @@ async function loadWeatherChip() {
 views.location_ask = () => {
   hideTabs();
   render(`
-    <div style="max-width:420px;margin:34px auto 0;text-align:center">
+    <div style="max-width:400px;margin:60px auto 0;text-align:center">
       <div style="font-size:52px" aria-hidden="true">🌦️</div>
-      <h1>Weather-smart nudges?</h1>
-      <p class="muted">If you share your rough location, HealthBuddy can time
-      nudges to the actual weather — "rain's started, grab the umbrella",
-      "it's 40° out, hydrate before you melt", "perfect evening for a walk".</p>
-      <div class="card" style="text-align:left">
-        <p class="small"><strong>What we store:</strong> your city-level position,
-        rounded to about a kilometre. Never your exact address, never a history
-        of where you've been.</p>
-        <p class="small" style="margin-top:8px"><strong>Never shared:</strong>
-        not with buddies, not on the leaderboard. Delete it any time from
-        Profile → Data &amp; Permissions.</p>
-      </div>
-      <button class="btn btn-primary btn-block section-gap" id="loc-allow">Use my location</button>
-      <button class="btn btn-ghost btn-block" id="loc-city">Type my city instead</button>
-      <button class="btn btn-link" id="loc-skip">Skip for now</button>
-      <p class="muted small section-gap">Weather by Open-Meteo</p>
+      <h1>Weather-smart nudges</h1>
+      <p class="muted">So we know when it's raining, or too hot for that walk.</p>
+      <button class="btn btn-primary btn-block section-gap" id="loc-allow">📍 Use my location</button>
+      <button class="btn btn-ghost btn-block" id="loc-city">Type my city</button>
+      <button class="btn btn-link" id="loc-skip">Skip</button>
+      <p class="muted small section-gap">City-level only · never shared · delete any time</p>
     </div>`);
 
   document.getElementById("loc-allow").onclick = () => requestLocation(() => go("home"));
   document.getElementById("loc-city").onclick = () => cityPickerFlow(() => go("home"));
   document.getElementById("loc-skip").onclick = async () => {
-    toast("No problem — you can add it later from Profile.");
     go("home");
     await maybePromptForPush();
   };
@@ -1577,7 +1557,12 @@ async function requestLocation(done) {
     await maybePromptForPush();
   };
 
-  const geo = window.Capacitor?.Plugins?.Geolocation;
+  /* Resolve exactly like the step/screen-time plugins do. Capacitor only
+     populates Capacitor.Plugins for plugins whose JS is bundled; for an npm
+     plugin we must ask registerPlugin() for a proxy. Using .Plugins alone is
+     why this silently fell through to browser geolocation. */
+  const geo = window.__hbPlugin ? window.__hbPlugin("Geolocation") : null;
+  const isNativeApp = !!window.Capacitor?.isNativePlatform?.();
   toast("Finding your location…");
 
   /* ---------- native app: real OS permission flow ---------- */
@@ -1590,6 +1575,7 @@ async function requestLocation(done) {
       if (perm.location === "denied" && perm.coarseLocation === "denied") {
         return locationBlockedHelp(done, true);
       }
+      toast("Getting a fix…");
       let pos;
       try {
         pos = await geo.getCurrentPosition({ enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
@@ -1602,9 +1588,26 @@ async function requestLocation(done) {
     } catch (e) {
       const msg = String(e && e.message || "").toLowerCase();
       if (msg.includes("denied") || msg.includes("permission")) return locationBlockedHelp(done, true);
+      if (msg.includes("not implemented") || msg.includes("unimplemented"))
+        return locationBlockedHelp(done, true);
       toast("Couldn't get a location fix — try typing your city.");
       return cityPickerFlow(done);
     }
+  }
+
+  /* Native shell but no Geolocation plugin = the APK was built without it.
+     Say so plainly instead of showing browser instructions that can't help. */
+  if (isNativeApp && !geo) {
+    modal(`<h2>Location needs a newer app 📍</h2>
+      <p class="muted small">This build doesn't include the location component yet.
+      Install the latest HealthBuddy APK and it'll work. Meanwhile you can type your city.</p>
+      <button class="btn btn-primary btn-block section-gap" id="ln-city">Type my city</button>
+      <button class="btn btn-ghost btn-block" data-close>Close</button>`);
+    setTimeout(() => document.getElementById("ln-city").onclick = () => {
+      document.querySelector(".modal-backdrop")?.remove();
+      cityPickerFlow(done);
+    }, 0);
+    return;
   }
 
   /* ---------- website / PWA: browser geolocation ---------- */
@@ -1619,12 +1622,12 @@ async function requestLocation(done) {
     let pos;
     try { pos = await tryBrowser(true); }
     catch (err) {
-      if (err && err.code === 1) return locationBlockedHelp(done, false);   // PERMISSION_DENIED
+      if (err && err.code === 1) return locationBlockedHelp(done, !!window.Capacitor);  // PERMISSION_DENIED
       pos = await tryBrowser(false);                                        // timeout → coarser
     }
     return finish(pos.coords.latitude, pos.coords.longitude, "device", pos.coords.accuracy);
   } catch (err) {
-    if (err && err.code === 1) return locationBlockedHelp(done, false);
+    if (err && err.code === 1) return locationBlockedHelp(done, !!window.Capacitor);
     toast("Couldn't get a location fix — try typing your city.");
     return cityPickerFlow(done);
   }
@@ -1633,11 +1636,10 @@ async function requestLocation(done) {
 /* Permission actually blocked: explain WHERE to fix it, instead of a
    dead-end "declined" toast. */
 function locationBlockedHelp(done, isNative) {
-  modal(`<h2>Location is blocked 📍</h2>
-    <p class="muted small">Your phone's location may be on, but HealthBuddy
-    itself needs permission. ${isNative
-      ? "Open <strong>Settings → Apps → HealthBuddy → Permissions → Location</strong> and choose <em>Allow only while using the app</em>, then try again."
-      : "Tap the 🔒 icon next to the address bar → <strong>Site settings → Location → Allow</strong>, then reload and try again."}</p>
+  modal(`<h2>Allow location? 📍</h2>
+    <p class="muted small">${isNative
+      ? "Settings → Apps → HealthBuddy → Permissions → Location → <strong>Allow</strong>"
+      : "Tap 🔒 in the address bar → Site settings → Location → <strong>Allow</strong>"}</p>
     <button class="btn btn-primary btn-block section-gap" id="lb-retry">Try again</button>
     <button class="btn btn-ghost btn-block" id="lb-city">Type my city instead</button>
     <button class="btn btn-link" data-close>Not now</button>`);
@@ -1655,9 +1657,8 @@ function locationBlockedHelp(done, isNative) {
 
 /* Manual fallback: search a city, pick from the matches. */
 function cityPickerFlow(done) {
-  modal(`<h2>Which city are you in? 🏙️</h2>
-    <p class="muted small">Used only to look up the weather. Several places share
-    a name, so check the state and country before picking.</p>
+  modal(`<h2>Your city 🏙️</h2>
+    <p class="muted small">Check the state before picking — names repeat.</p>
     <button class="btn btn-ghost btn-block" id="city-gps">📍 Use my exact location instead</button>
     <div class="field"><label for="city-q">City</label>
       <input id="city-q" placeholder="e.g. Kanpur" autocomplete="address-level2"></div>
@@ -1758,17 +1759,38 @@ async function loadBodyBlock() {
         <div class="body-cell"><strong>${b.height_cm ?? "—"}</strong><span class="muted small">cm</span></div>
         <div class="body-cell"><strong>${b.weight_kg ?? "—"}</strong><span class="muted small">kg</span></div>
       </div>
-      ${b.bmi ? `<p class="small section-gap">BMI <strong>${b.bmi}</strong> — ${esc(b.bmi_band)}.</p>
-                 <p class="muted small">${esc(b.note)}</p>`
-              : `<p class="muted small section-gap">Add height and weight to see your BMI. Entirely optional.</p>`}
+      ${b.bmi ? `
+        <div class="bmi-head"><strong>BMI ${b.bmi}</strong>
+          <span class="muted small">${esc(b.bmi_band)}</span></div>
+        ${bmiScaleHTML(b.bmi)}
+        ${b.typical_weight ? `<p class="muted small">Typical for ${b.height_cm} cm:
+          ${b.typical_weight.min}–${b.typical_weight.max} kg · ${esc(b.note)}</p>` : ""}`
+      : `<p class="muted small">Add height and weight to see your BMI.</p>`}
       <button class="btn btn-ghost btn-sm section-gap" id="body-edit">Update</button>`;
     document.getElementById("body-edit").onclick = () => bodyEditModal(b);
   } catch (_) { host.innerHTML = ""; }
 }
 
+/* A small visual scale: four BMI bands with a marker where you sit.
+   Reads at a glance, and replaces a paragraph nobody finished. */
+function bmiScaleHTML(value) {
+  const LOW = 15, HIGH = 35;                     // visible span
+  const pct = Math.max(0, Math.min(100, ((value - LOW) / (HIGH - LOW)) * 100));
+  return `
+    <div class="bmi-scale" role="img" aria-label="BMI ${value} on a scale from 15 to 35">
+      <div class="bmi-bar">
+        <span style="flex:${18.5 - LOW}" class="b1"></span>
+        <span style="flex:${25 - 18.5}" class="b2"></span>
+        <span style="flex:${30 - 25}" class="b3"></span>
+        <span style="flex:${HIGH - 30}" class="b4"></span>
+        <span class="bmi-marker" style="left:${pct}%"></span>
+      </div>
+      <div class="bmi-ticks"><span>18.5</span><span>25</span><span>30</span></div>
+    </div>`;
+}
+
 function bodyEditModal(b) {
   modal(`<h2>Body basics 📏</h2>
-    <p class="muted small">All optional — clear a field to remove it.</p>
     <div class="field"><label for="be-dob">Date of birth</label>
       <input id="be-dob" type="date" value="${b.dob || ""}" max="${new Date().toISOString().slice(0, 10)}"></div>
     <div class="field"><label for="be-h">Height (cm)</label>

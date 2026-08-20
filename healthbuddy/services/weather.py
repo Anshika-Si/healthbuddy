@@ -16,7 +16,14 @@ PRIVACY, by design:
     simply absent, and the app behaves exactly as it did before.
   * Never shared with buddies or the leaderboard; deletable in one call.
 
-CALL BUDGET: 30-minute TTL per cell → ~48 calls/day per populated cell,
+ACCURACY: Open-Meteo blends national met-service models (IMD/ECMWF/GFS etc.)
+on a ~1 km grid, which is the same class of source a weather app uses. Small
+differences from Google (usually 1–2 °C) are normal — providers use different
+models and different station blending, and "feels like" formulas differ. We
+also show apparent temperature alongside the raw reading, because that's the
+number that matters for a heat nudge.
+
+CALL BUDGET: 15-minute TTL per cell → ~96 calls/day per populated cell,
 however many users share it. A city spanning a few cells still costs a few
 hundred calls/day against a 10,000/day free allowance.
 """
@@ -29,7 +36,7 @@ from ..db import execute, query
 
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
-CACHE_TTL_MINUTES = 30
+CACHE_TTL_MINUTES = 15
 UA = "HealthBuddy/1.0 (health nudge app; open-meteo client)"
 ATTRIBUTION = "Weather by Open-Meteo"
 

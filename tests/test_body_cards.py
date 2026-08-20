@@ -56,7 +56,7 @@ class BodyAndCardsTestCase(unittest.TestCase):
                        "should", "target", "ideal", "unhealthy", "normal"):
             self.assertNotIn(banned, bands)
         note = body_svc.summary(_row(170, 65, None))["note"].lower()
-        for reassurance in ("not a target", "rough"):
+        for reassurance in ("not a goal", "rough"):
             self.assertIn(reassurance, note)
         for banned in ("lose weight", "you should", "goal weight"):
             self.assertNotIn(banned, note)

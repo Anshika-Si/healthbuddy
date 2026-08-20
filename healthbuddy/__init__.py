@@ -1,7 +1,7 @@
 """HealthBuddy application factory."""
 from flask import Flask, render_template
 
-APP_BUILD = "2026-08-20-delete-account"   # bump when shipping
+APP_BUILD = "2026-08-20-geo-plugin-fix"   # bump when shipping
 
 from .config import Config
 from .db import close_db, init_db

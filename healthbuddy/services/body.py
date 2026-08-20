@@ -77,6 +77,15 @@ def bmi_band(value):
     return "well above the typical range"
 
 
+def typical_weight_range(height_cm):
+    """The weight span that lands in the 18.5–24.9 BMI band for this height.
+    Shown as a factual range, never as a goal to hit."""
+    if not height_cm:
+        return None
+    m = float(height_cm) / 100.0
+    return {"min": round(18.5 * m * m), "max": round(24.9 * m * m)}
+
+
 def summary(user_row):
     """What the profile screen shows. Returns None-safe fields only."""
     height = user_row["height_cm"] if "height_cm" in user_row.keys() else None
@@ -90,6 +99,6 @@ def summary(user_row):
         "weight_kg": weight,
         "bmi": value,
         "bmi_band": bmi_band(value),
-        "note": ("BMI is a rough population measure — it can't see muscle, "
-                 "build or bone. It's here for context, not a target."),
+        "typical_weight": typical_weight_range(height),
+        "note": "a rough guide, not a goal",
     }
